@@ -49,17 +49,32 @@ uint32_t controls_key(int choice) {
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-static void sanitize(Controls *c) {
+/* Usable on this console (ZL/ZR only on a New 3DS). */
+static bool button_ok(int b) {
+    return b >= 0 && b < NBUTTONS && (!k_buttons[b].n3ds_only || sys_is_new3ds());
+}
+
+/* Returns false if gas, brake or nitro had to go back to the defaults. Each action needs a
+ * button of its own: one button on both gas and brake presses both, and the game reads the
+ * brake at a standstill as reverse (fn_0002bf68), so the car could only reverse (build 5). */
+static bool sanitize(Controls *c) {
     c->steer = c->steer == STEER_TILT ? STEER_TILT : STEER_PAD;
     c->stick_sens = clampi(c->stick_sens, 50, 200);
     c->stick_dz = clampi(c->stick_dz, 0, 40);
     c->tilt_range = clampi(c->tilt_range, 10, 60);
-    c->gas = clampi(c->gas, 0, NBUTTONS - 1);
-    c->brake = clampi(c->brake, 0, NBUTTONS - 1);
-    c->nitro = clampi(c->nitro, 0, NBUTTONS - 1);
+    if (!button_ok(c->gas) || !button_ok(c->brake) || !button_ok(c->nitro) ||
+        c->gas == c->brake || c->gas == c->nitro || c->brake == c->nitro) {
+        c->gas = k_default.gas;
+        c->brake = k_default.brake;
+        c->nitro = k_default.nitro;
+        return false;
+    }
+    return true;
 }
 
 static void cfg_path(char *buf, size_t n) { snprintf(buf, n, "%s/controls.cfg", ios_doc_dir()); }
+
+static void save(void);
 
 static void load(void) {
     s_c = k_default;
@@ -79,7 +94,10 @@ static void load(void) {
         else if (!strcmp(key, "nitro")) s_c.nitro = v;
     }
     fclose(f);
-    sanitize(&s_c);
+    if (!sanitize(&s_c)) {
+        sys_log("controls: gas/brake/nitro shared a button or used a missing one: defaults");
+        save();
+    }
 }
 
 static void save(void) {
@@ -180,6 +198,16 @@ static int next_button(int cur, int dir) {
     return cur;
 }
 
+/* Moves one action to the next button; an action that already had that button takes this
+ * one's old button, so no two actions ever share one. */
+static void set_button(int *which, int dir) {
+    int old = *which, nb = next_button(old, dir);
+    int *acts[] = {&s_c.gas, &s_c.brake, &s_c.nitro};
+    for (int i = 0; i < 3; i++)
+        if (acts[i] != which && *acts[i] == nb) *acts[i] = old;
+    *which = nb;
+}
+
 static void change(int row, int dir) {
     Controls before = s_c;
     switch (row) {
@@ -187,9 +215,9 @@ static void change(int row, int dir) {
     case ROW_SENS: s_c.stick_sens = clampi(s_c.stick_sens + 10 * dir, 50, 200); break;
     case ROW_DZ: s_c.stick_dz = clampi(s_c.stick_dz + 5 * dir, 0, 40); break;
     case ROW_TILT: s_c.tilt_range = clampi(s_c.tilt_range + 5 * dir, 10, 60); break;
-    case ROW_GAS: s_c.gas = next_button(s_c.gas, dir); break;
-    case ROW_BRAKE: s_c.brake = next_button(s_c.brake, dir); break;
-    case ROW_NITRO: s_c.nitro = next_button(s_c.nitro, dir); break;
+    case ROW_GAS: set_button(&s_c.gas, dir); break;
+    case ROW_BRAKE: set_button(&s_c.brake, dir); break;
+    case ROW_NITRO: set_button(&s_c.nitro, dir); break;
     case ROW_RESET: s_c = k_default; break;
     }
     if (memcmp(&before, &s_c, sizeof s_c)) s_dirty = true;
