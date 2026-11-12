@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the 3DS RomFS from the extracted iOS resources.
 
-Usage:  python -I tools/build_romfs.py [--raw build/ios_raw] [--out build/romfs] [--tex3ds PATH]
+Usage:  python -I tools/build_romfs.py [--raw build/ios_raw] [--out "3DS Files/romfs"] [--tex3ds PATH]
 
 Run tools/extract_ios.py first. Output layout (flat, like the iOS bundle; the port's fs layer
 drops the Wii-style directories the game code asks for, as the iOS build did):
@@ -12,6 +12,9 @@ drops the Wii-style directories the game code asks for, as the iOS build did):
   *.map *.pbm *_objs.txt   tracks (docs/formats/tracks.md)
   *.wav          PCM16 mono, played by ndsp as-is
   lang_*.txt sys_msg_*.txt  text
+  ios_image.bin  the game's static data: iOS addresses [0x3b000, 0x8c000) of the armv7 slice
+                 (__cstring/__const/__DATA file contents, zero-filled __common/__bss), loaded by
+                 3DS Files/source/game/game_main.c as the global-variable image (see include/ios.h)
 """
 import argparse
 import os
@@ -23,6 +26,32 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pngio  # noqa: E402
 
+IMG_LO, IMG_HI = 0x3B000, 0x8C000
+
+
+def write_image(binpath, out):
+    """Cut the iOS data image out of the (thin, decrypted) armv7 Mach-O."""
+    import struct
+    d = open(binpath, "rb").read()
+    img = bytearray(IMG_HI - IMG_LO)
+    ncmds = struct.unpack_from("<I", d, 16)[0]
+    off = 28
+    for _ in range(ncmds):
+        cmd, sz = struct.unpack_from("<II", d, off)
+        if cmd == 1:  # LC_SEGMENT
+            nsects = struct.unpack_from("<I", d, off + 48)[0]
+            for j in range(nsects):
+                sec = off + 56 + j * 68
+                addr, size, foff = struct.unpack_from("<III", d, sec + 32)
+                flags = struct.unpack_from("<I", d, sec + 56)[0]
+                zerofill = (flags & 0xFF) in (1, 0x12)  # S_ZEROFILL, S_THREAD_LOCAL_ZEROFILL
+                lo, hi = max(addr, IMG_LO), min(addr + size, IMG_HI)
+                if lo < hi and not zerofill and foff:
+                    img[lo - IMG_LO:hi - IMG_LO] = d[foff + lo - addr:foff + hi - addr]
+        off += sz
+    open(os.path.join(out, "ios_image.bin"), "wb").write(img)
+
+
 # Store-only images the game never loads.
 SKIP = {"iTunesArtwork.png"}
 
@@ -31,16 +60,29 @@ def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw", default=os.path.join(root, "build", "ios_raw"))
-    ap.add_argument("--out", default=os.path.join(root, "build", "romfs"))
+    ap.add_argument("--out", default=os.path.join(root, "3DS Files", "romfs"))
+    ap.add_argument("--bin", default=os.path.join(root, "build", "bin", "3d_pixel_racing.armv7"))
+    ap.add_argument("--extra", nargs="*",
+                    default=[os.path.join(root, "build", "banner", "bottom_logo.png")],
+                    help="more PNGs to convert (bottom_logo.png: tools/banner/make_banner.py)")
+    ap.add_argument("--image-only", action="store_true", help="only (re)write ios_image.bin")
     ap.add_argument("--tex3ds", default=os.path.join(os.environ.get("DEVKITPRO", "C:/devkitPro"), "tools", "bin", "tex3ds"))
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
+    write_image(a.bin, a.out)
+    if a.image_only:
+        print("wrote", os.path.join(a.out, "ios_image.bin"))
+        return
 
     manifest = []
     counts = {}
     with tempfile.TemporaryDirectory() as tmp:
-        for name in sorted(os.listdir(a.raw)):
-            src = os.path.join(a.raw, name)
+        extra = {os.path.basename(p): p for p in a.extra if os.path.exists(p)}
+        for p in a.extra:
+            if not os.path.exists(p):
+                print("note: %s missing (run tools/banner/make_banner.py)" % p)
+        for name in sorted(set(os.listdir(a.raw)) | set(extra)):
+            src = extra.get(name) or os.path.join(a.raw, name)
             base, ext = os.path.splitext(name)
             if name in SKIP:
                 continue

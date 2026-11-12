@@ -1,0 +1,8 @@
+# m_2d550 (src/game/m_2d550.c)
+0002d550	void fn_0002d550(int i)
+000302d0	void fn_000302d0(int snd, int target)
+00030318	void fn_00030318(void)
+00030ac4	void fn_00030ac4(void)
+00030bf4	void fn_00030bf4(void)
+00030fcc	void fn_00030fcc(int car)
+00031020	void fn_00031020(int car, int wheel, unsigned color, int type, float scale)

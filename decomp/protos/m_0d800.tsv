@@ -1,0 +1,6 @@
+# m_0d800 (src/game/m_0d800.c)
+0000d800	float fn_0000d800(int car, float x, float y, float z, int *out)
+0000ff60	void fn_0000ff60(int id, const char *path, int flags)
+0000fff0	void fn_0000fff0(const char *path, int layer)
+0000fb78	void fn_0000fb78(int i, int tile, int off_, int rot_)
+00011018	void fn_00011018(int dst_, int n)

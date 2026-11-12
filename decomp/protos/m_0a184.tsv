@@ -1,0 +1,3 @@
+0000cd00	void fn_0000cd00(const char *name)
+0000cd64	void fn_0000cd64(const char *path)
+0000a40c	void fn_0000a40c(void)

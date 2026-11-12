@@ -1,0 +1,7 @@
+00023808	void fn_00023808(const char *s, float x, float y, float sx, float sy, int r, int g, int b, int a, int flags)
+00023ad0	void fn_00023ad0(int row, int icon, const char *text)
+00023e20	void fn_00023e20(int x, int y, int icon, float size)
+00027d90	void fn_00027d90(int row, const char *text)
+00027ef4	void fn_00027ef4(int row, const char *text)
+00028058	void fn_00028058(int draw_cars, int x, int y, int cell, int hilite)
+0002889c	void fn_0002889c(int car, int arg)

@@ -1,0 +1,78 @@
+; GLES 1.1 fixed-function vertex stage for gfx_c3d.c:
+;   position  = projection * modelView * v0
+;   texcoord  = texMtx * (v2, 0, 1), then t' = tcFlip.x + tcFlip.y * t
+;   color     = lighting ? clamp(lightAmb + lightDif * max(N.L, 0)) : curColor
+; One light (GL_LIGHT0), position in eye space (w = 0 directional). Normals are normalised
+; after the modelView transform, so GL_SHORT/GL_BYTE normals need no scaling.
+
+.fvec projection[4], modelView[4], texMtx[4]
+.fvec curColor, lightPos, lightAmb, lightDif, lightFlag, tcFlip
+
+.constf consts(0.0, 1.0, -1.0, 0.5)
+.alias zeros consts.xxxx
+.alias ones  consts.yyyy
+
+.out outpos position
+.out outclr color
+.out outtc0 texcoord0
+
+.in inpos v0
+.in innrm v1
+.in intc  v2
+
+.proc main
+	; r0 = (pos, 1)
+	mov r0.xyz, inpos
+	mov r0.w,   ones
+
+	; r1 = eye-space position
+	dp4 r1.x, modelView[0], r0
+	dp4 r1.y, modelView[1], r0
+	dp4 r1.z, modelView[2], r0
+	dp4 r1.w, modelView[3], r0
+
+	dp4 outpos.x, projection[0], r1
+	dp4 outpos.y, projection[1], r1
+	dp4 outpos.z, projection[2], r1
+	dp4 outpos.w, projection[3], r1
+
+	; texture coordinates
+	mov r2.xy, intc
+	mov r2.z,  zeros
+	mov r2.w,  ones
+	dp4 r3.x, texMtx[0], r2
+	dp4 r3.y, texMtx[1], r2
+	mul r3.y, tcFlip.y, r3.y
+	add r3.y, tcFlip.x, r3.y
+	mov r3.zw, consts.xy
+	mov outtc0, r3
+
+	; eye-space normal, normalised
+	dp3 r4.x, modelView[0], innrm
+	dp3 r4.y, modelView[1], innrm
+	dp3 r4.z, modelView[2], innrm
+	dp3 r5.x, r4, r4
+	rsq r5.x, r5.x
+	mul r4.xyz, r5.xxx, r4.xyz
+
+	; light vector: lightPos.xyz - eye * lightPos.w, normalised
+	mul r6.xyz, lightPos.www, r1.xyz
+	add r6.xyz, lightPos.xyz, -r6.xyz
+	dp3 r5.x, r6, r6
+	rsq r5.x, r5.x
+	mul r6.xyz, r5.xxx, r6.xyz
+
+	; diffuse term
+	dp3 r7.x, r4, r6
+	max r7.x, zeros, r7.x
+	mul r8, lightDif, r7.xxxx
+	add r8, lightAmb, r8
+	min r8, ones, r8
+
+	; colour = curColor + (lit - curColor) * lightFlag.x
+	add r9, -curColor, r8
+	mul r9, lightFlag.xxxx, r9
+	add outclr, curColor, r9
+
+	end
+.end

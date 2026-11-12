@@ -9,13 +9,44 @@ decompilation of the iOS 1.1 release, with the Wii version's tilt steering and b
   `Dolphin Emulator/Wii/title/00010001/57334645/content`) and the WAD (for the banner)
 
 ## Status
-Early work: asset pipeline and analysis. See `docs/formats/` for the reversed file formats.
+Boots, runs the menus and plays races with CPU racers in Azahar, driven by the physical
+buttons (no on-screen touch buttons). Sound plays through ndsp. The bottom screen shows the
+3D Pixel Racing logo whenever the game draws nothing there. See `docs/formats/` for the
+reversed file formats and `docs/TRANSLATION.md` for how the game code is translated.
+
+## Layout
+| Path | What |
+|---|---|
+| `3DS Files/source/game/` | the translated iOS game code (`m_<addr>.c`, `tick.c`, `engine.c`, `game_main.c`) |
+| `3DS Files/source/platform/` | 3DS platform layer: GL ES 1.1 on citro3d, input, sound, UDS |
+| `3DS Files/include/` | `ios.h` (image access macros), generated `protos.h`, platform headers |
+| `3DS Files/meta/` | `app.rsf`, the icon and the HOME Menu banner (rebuilt from the Wii banner) |
+| `3DS Files/romfs/` | generated from your IPA by `tools/build_romfs.py` (not tracked) |
+
+## Building
+```
+python -I tools/extract_ios.py
+python -I tools/banner/make_banner.py --out "3DS Files/meta"
+python -I tools/build_romfs.py --out "3DS Files/romfs" --tex3ds C:/devkitPro/tools/bin/tex3ds.exe
+powershell -ExecutionPolicy Bypass -File tools/build.ps1          # -> 3DS Files/PixelRacing-3DS.3dsx
+powershell -ExecutionPolicy Bypass -File tools/build.ps1 cia      # -> 3DS Files/PixelRacing-3DS.cia
+```
+devkitPro's Makefile template can't run from a path with spaces, so `tools/build.ps1`
+substitutes drive letters around the build. Pass `DEBUG=1` to log to
+`sdmc:/3ds/PixelRacing3D/log.txt`. `make_banner.py` also renders the bottom-screen logo
+that `build_romfs.py` picks up, so run it first.
+
+Controls: A gas, B brake, D-pad / Circle Pad steer, R or X the race button at index 7 (its role is not confirmed yet),
+START or SELECT pause.
 
 ## Tools
 | Script | What it does |
 |---|---|
 | `tools/extract_ios.py` | IPA -> `build/ios_raw/` resources + `build/bin/3d_pixel_racing.armv7` |
-| `tools/build_romfs.py` | `build/ios_raw/` -> `build/romfs/` (tex3ds textures, models, tracks, audio, text) |
+| `tools/build_romfs.py` | `build/ios_raw/` -> the RomFS (tex3ds textures, models, tracks, audio, text) |
+| `tools/build.ps1` | builds `3DS Files` (see above) |
+| `tools/run_azahar.ps1` | boots the .3dsx in Azahar, plays a key script and saves screenshots |
+| `tools/capture_audio.ps1` | records the PC's audio output (WASAPI loopback) to check the port's sound |
 | `tools/pngio.py` | PNG reader/writer that decodes Apple CgBI ("crushed") PNGs |
 | `tools/wii_unpack.py` | Dolphin-decrypted Wii contents -> `build/wii/` (LZ77 0x10/0x11, U8) |
 | `tools/dol2elf.py` | Wii DOL -> PPC ELF for Ghidra |

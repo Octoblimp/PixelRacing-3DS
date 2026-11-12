@@ -1,0 +1,148 @@
+BasicInfo:
+  Title                   : "PixelRacing3D"
+  ProductCode             : "CTR-P-PXRC"
+  Logo                    : Homebrew
+
+RomFs:
+  # build/romfs, generated locally from the user's own iOS copy (make romfs)
+  RootPath                : $(APP_ROMFS)
+
+TitleInfo:
+  Category                : Application
+  UniqueId                : 0xB3D90
+
+Option:
+  UseOnSD                 : true
+  FreeProductCode         : true
+  MediaFootPadding        : false
+  EnableCrypt             : false
+  EnableCompress          : true
+
+AccessControlInfo:
+  CoreVersion                   : 2
+  DescVersion                   : 2
+  ReleaseKernelMajor            : "02"
+  ReleaseKernelMinor            : "33"
+
+  UseExtSaveData                : false
+  FileSystemAccess:
+   - DirectSdmc
+
+  MemoryType                    : Application
+  # Old 3DS: 80MB application region ("dev2" split: 80 app / 28 system / 20 base).
+  # The HOME Menu stays resident at this size on most firmwares only barely, so like any
+  # extended-memory title the app is launched with the HOME Menu terminated and the console
+  # returns to it on exit. Only the CIA gets this; a .3dsx inherits its host's memory.
+  SystemMode                    : 80MB
+  # New 3DS: 124MB application region (124 app / 100 system / 32 base). The kernel picks
+  # SystemMode or SystemModeExt by console model, so one CIA runs on both.
+  SystemModeExt                 : 124MB
+  IdealProcessor                : 0
+  AffinityMask                  : 1
+  Priority                      : 16
+  MaxCpu                        : 0
+  HandleTableSize               : 0x200
+  DisableDebug                  : false
+  EnableForceDebug              : false
+  CanWriteSharedPage            : true
+  CanUsePrivilegedPriority      : false
+  CanUseNonAlphabetAndNumber    : true
+  PermitMainFunctionArgument    : true
+  CanShareDeviceMemory          : true
+  RunnableOnSleep               : false
+  SpecialMemoryArrange          : true
+  # New 3DS clock + L2 cache; sys.c turns them on with osSetSpeedupEnable(true).
+  CpuSpeed                      : 804MHz
+  EnableL2Cache                 : true
+  CanAccessCore2                : false
+
+  # ndsp needs the DSP shared memory mapped explicitly on real hardware (emulators don't check).
+  IORegisterMapping:
+   - 1ff00000-1ff7ffff # DSP memory
+  MemoryMapping:
+   - 1f000000-1f5fffff:r # VRAM
+
+  SystemCallAccess:
+    ArbitrateAddress: 34
+    Break: 60
+    CancelTimer: 28
+    ClearEvent: 25
+    ClearTimer: 29
+    CloseHandle: 35
+    ConnectToPort: 45
+    ControlMemory: 1
+    CreateAddressArbiter: 33
+    CreateEvent: 23
+    CreateMemoryBlock: 30
+    CreateMutex: 19
+    CreateSemaphore: 21
+    CreateThread: 8
+    CreateTimer: 26
+    DuplicateHandle: 39
+    ExitProcess: 3
+    ExitThread: 9
+    FlushProcessDataCache: 84
+    GetCurrentProcessorNumber: 17
+    GetHandleInfo: 41
+    GetProcessId: 53
+    GetProcessIdOfThread: 54
+    GetProcessIdealProcessor: 6
+    GetProcessInfo: 43
+    GetResourceLimit: 56
+    GetResourceLimitCurrentValues: 58
+    GetResourceLimitLimitValues: 57
+    GetSystemInfo: 42
+    GetSystemTick: 40
+    GetThreadContext: 59
+    GetThreadId: 55
+    GetThreadIdealProcessor: 15
+    GetThreadInfo: 44
+    GetThreadPriority: 11
+    MapMemoryBlock: 31
+    OutputDebugString: 61
+    QueryMemory: 2
+    ReleaseMutex: 20
+    ReleaseSemaphore: 22
+    SendSyncRequest1: 46
+    SendSyncRequest2: 47
+    SendSyncRequest3: 48
+    SendSyncRequest4: 49
+    SendSyncRequest: 50
+    SetThreadPriority: 12
+    SetTimer: 27
+    SignalEvent: 24
+    SleepThread: 10
+    UnmapMemoryBlock: 32
+    WaitSynchronization1: 36
+    WaitSynchronizationN: 37
+    Backdoor: 123
+
+  # cfg/gsp/hid/apt/ac/ndm/ptm for libctru startup and the gyro; ptm:sysm for the New 3DS
+  # speedup; dsp::DSP for ndsp; nwm::UDS for local wireless; fs:USER for the save archive.
+  ServiceAccessControl:
+   - cfg:u
+   - fs:USER
+   - gsp::Gpu
+   - hid:USER
+   - APT:U
+   - ac:u
+   - ndm:u
+   - ptm:u
+   - ptm:sysm
+   - dsp::DSP
+   - nwm::UDS
+
+SystemControlInfo:
+  SaveDataSize: 512KB
+  RemasterVersion: 0
+  StackSize: 0x40000
+  Dependency:
+    ac: 0x0004013000002402
+    am: 0x0004013000001502
+    cfg: 0x0004013000001702
+    gsp: 0x0004013000001c02
+    hid: 0x0004013000001d02
+    ndm: 0x0004013000002b02
+    pdn: 0x0004013000002102
+    ptm: 0x0004013000002202
+    nwm: 0x0004013000002d02

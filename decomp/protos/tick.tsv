@@ -1,0 +1,2 @@
+# game tick (src/game/tick.c)
+00009dc0	void fn_00009dc0(int pl)

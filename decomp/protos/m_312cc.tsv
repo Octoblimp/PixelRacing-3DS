@@ -1,0 +1,7 @@
+# m_312cc (src/game/m_312cc.c)
+000312cc	void fn_000312cc(int car, int pad)
+00034810	void fn_00034810(int snd, int player, int vol)
+0003485c	void fn_0003485c(void)
+00034a98	void fn_00034a98(void)
+0003517c	void fn_0003517c(int car, int place)
+00035450	void fn_00035450(int car, int player, float a, float b)

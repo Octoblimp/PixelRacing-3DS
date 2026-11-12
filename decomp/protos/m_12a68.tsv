@@ -1,0 +1,2 @@
+00012a68	void fn_00012a68(int player, int pass)
+00015e4c	void fn_00015e4c(int player, int pass_ground, int pass_walls, int pass_objects, int pass_effects, int radius, int pass_shadow)
