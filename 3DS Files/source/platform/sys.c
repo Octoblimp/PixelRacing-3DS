@@ -5,6 +5,7 @@
  * paced by the GPU vsync (C3D_FRAME_SYNCDRAW in gfxGL_EndFrame), and each presented frame runs
  * 1 tick on New 3DS (60 fps) or 2 ticks on Old 3DS (30 fps). */
 #include <3ds.h>
+#include <malloc.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -141,9 +142,19 @@ static void perf_frame(void) {
     uint32_t span = now - s_start;
     if (span >= 10000) {
         uint32_t fps10 = s_frames * 10000 / span;
-        sys_log("perf: %lu.%lu fps, slowest frame %lu ms, linear free %lu KB",
-                (unsigned long)(fps10 / 10), (unsigned long)(fps10 % 10),
-                (unsigned long)s_worst, (unsigned long)(linearSpaceFree() / 1024));
+        /* memory: what is free now, and the peak use since boot, so a run on a big console
+         * tells what a small one needs */
+        static uint32_t s_lin_min = 0xffffffffu, s_heap_max;
+        uint32_t lin = linearSpaceFree();
+        struct mallinfo mi = mallinfo();
+        if (lin < s_lin_min) s_lin_min = lin;
+        if ((uint32_t)mi.uordblks > s_heap_max) s_heap_max = (uint32_t)mi.uordblks;
+        sys_log("perf: %lu.%lu fps, slowest frame %lu ms, linear free %lu KB (peak use %lu KB), "
+                "malloc %lu KB (peak %lu KB)",
+                (unsigned long)(fps10 / 10), (unsigned long)(fps10 % 10), (unsigned long)s_worst,
+                (unsigned long)(lin / 1024),
+                (unsigned long)((g_heap_info.linear - s_lin_min) / 1024),
+                (unsigned long)(mi.uordblks / 1024), (unsigned long)(s_heap_max / 1024));
         s_start = now;
         s_frames = s_worst = 0;
     }

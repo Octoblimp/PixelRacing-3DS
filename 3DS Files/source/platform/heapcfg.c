@@ -1,4 +1,4 @@
-/* Heap split for the extended memory modes (meta/app.rsf: 96MB on Old 3DS, 178MB on New 3DS).
+/* Heap split for the memory modes (meta/app.rsf: 64MB on Old 3DS, 178MB on New 3DS).
  *
  * Stock libctru gives the linear (GPU-visible, physically contiguous) heap at most 32MB and
  * pours everything else into the malloc heap. With a 178MB grant that is a ~146MB malloc heap,
@@ -8,7 +8,9 @@
  * extra memory belongs there anyway.
  *
  * So this replaces libctru's weak __system_allocateHeaps():
- *   - the malloc heap gets HEAP_WANT (or half of a small grant),
+ *   - the malloc heap gets a quarter of the grant, between HEAP_MIN_WANT and HEAP_WANT (a
+ *     race peaks at about 8MB of malloc and 21MB of linear memory, so on an Old 3DS's ~60MB
+ *     the linear heap is the one that needs the room),
  *   - the linear heap gets the rest, capped at one 128MB FCRAM bank (a physically contiguous
  *     block cannot cross the bank boundary on New 3DS), asked for first while the region is
  *     least fragmented,
@@ -31,6 +33,7 @@ HeapInfo g_heap_info;
 
 #define MB (1024u * 1024u)
 #define HEAP_WANT (40u * MB)
+#define HEAP_MIN_WANT (12u * MB)
 #define HEAP_MIN (4u * MB)
 #define FCRAM_BANK (128u * MB)
 #define LINEAR_MIN (4u * MB)
@@ -49,8 +52,9 @@ void __system_allocateHeaps(void) {
     u32 avail = (used >= 0 && max > used) ? ALIGN4K(max - used) : 60u * MB;
     g_heap_info.avail = avail;
 
-    u32 heap = HEAP_WANT;
-    if (heap > avail / 2) heap = ALIGN4K(avail / 2);
+    u32 heap = ALIGN4K(avail / 4);
+    if (heap > HEAP_WANT) heap = HEAP_WANT;
+    if (heap < HEAP_MIN_WANT) heap = avail / 2 < HEAP_MIN_WANT ? ALIGN4K(avail / 2) : HEAP_MIN_WANT;
     u32 want = avail - heap;
     if (want > FCRAM_BANK) want = FCRAM_BANK;
     want = ALIGN4K(want);

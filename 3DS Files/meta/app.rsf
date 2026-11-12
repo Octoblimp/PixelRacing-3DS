@@ -29,14 +29,17 @@ AccessControlInfo:
    - DirectSdmc
 
   MemoryType                    : Application
-  # Old 3DS: Extended Memory Mode, a 96MB application region. New 3DS: its own 178MB mode.
-  # The console picks SystemMode or SystemModeExt by model, so one CIA runs on both. These
-  # are the two modes other extended-memory ports run with on retail hardware (an earlier
-  # build asked for 80MB / 124MB and got the plain 64MB instead). In both modes the HOME
-  # Menu is closed while the game runs: the HOME button does nothing and quitting the game
-  # restarts the console back into the HOME Menu. Only the CIA gets this; a .3dsx inherits
-  # its host's memory.
-  SystemMode                    : 96MB
+  # Old 3DS: the normal 64MB mode. New 3DS: its own 178MB mode. The console picks SystemMode or
+  # SystemModeExt by model, so one CIA runs on both.
+  # On an Old 3DS every bigger mode (72/80/96MB) is taken from the SYSTEM region the HOME Menu
+  # lives in (64MB: 44MB of SYSTEM; 96MB: 12MB). Build 3 asked for 96MB and the user's Old 3DS
+  # crashed in the HOME Menu itself (Luma dump: process "menu", null write), the HOME Menu
+  # running out of memory. The game needs far less than 64MB (a race on a New 3DS peaks around
+  # 20MB of linear memory), so the Old 3DS gets the normal mode and keeps a working HOME Menu.
+  # The New 3DS 178MB mode leaves 46MB of SYSTEM, more than an Old 3DS normally has, and its
+  # HOME Menu has been seen suspending and resuming the game on hardware.
+  # Only the CIA gets these; a .3dsx inherits its host's memory.
+  SystemMode                    : 64MB
   SystemModeExt                 : 178MB
   IdealProcessor                : 0
   AffinityMask                  : 1
