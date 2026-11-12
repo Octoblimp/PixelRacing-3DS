@@ -7,7 +7,9 @@ Run tools/extract_ios.py first. Output layout (flat, like the iOS bundle; the po
 drops the Wii-style directories the game code asks for, as the iOS build did):
   *.t3x          textures (tex3ds; rgb8 if fully opaque, else rgba8), padded to power-of-two
   textures.txt   name  width height pot_width pot_height format   (one line per texture)
-  *.bin          models ("SMD Reference bin File", see docs/formats/models.md)
+  *.bin          models ("SMD Reference bin File", see docs/formats/models.md), with hidden
+                 coplanar overlaps cut out by tools/smd_dedupe.py (a car's access part and
+                 windows also against its body, which is drawn first with the same transform)
   *.smd          only road_00.smd (its material is an .ifl texture list; kept for reference)
   *.map *.pbm *_objs.txt   tracks (docs/formats/tracks.md)
   *.wav          PCM16 mono, played by ndsp as-is
@@ -25,6 +27,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pngio  # noqa: E402
+import smd_dedupe  # noqa: E402
 
 IMG_LO, IMG_HI = 0x3B000, 0x8C000
 
@@ -66,7 +69,10 @@ def main():
                     default=[os.path.join(root, "build", "banner", "bottom_logo.png")],
                     help="more PNGs to convert (bottom_logo.png: tools/banner/make_banner.py)")
     ap.add_argument("--image-only", action="store_true", help="only (re)write ios_image.bin")
-    ap.add_argument("--tex3ds", default=os.path.join(os.environ.get("DEVKITPRO", "C:/devkitPro"), "tools", "bin", "tex3ds"))
+    dkp = os.environ.get("DEVKITPRO", "C:/devkitPro")
+    if os.name == "nt" and dkp.startswith("/opt/"):
+        dkp = "C:/devkitPro"  # the msys2 path devkitPro's installer sets
+    ap.add_argument("--tex3ds", default=os.path.join(dkp, "tools", "bin", "tex3ds"))
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     write_image(a.bin, a.out)
@@ -102,6 +108,19 @@ def main():
                 counts["t3x"] = counts.get("t3x", 0) + 1
             elif ext == ".smd" and base != "road_00":
                 continue  # the .bin carries the same mesh
+            elif ext == ".bin" and open(src, "rb").read(3) == b"SMD":
+                data = open(src, "rb").read()
+                earlier = []
+                for part, before in (("_access", ("_body",)), ("_window", ("_body", "_access"))):
+                    if base.startswith("car_") and base.endswith(part):
+                        stem = base[: -len(part)]
+                        earlier = [open(os.path.join(a.raw, stem + b + ".bin"), "rb").read()
+                                   for b in before]
+                new, n0, n1 = smd_dedupe.dedupe(data, earlier)
+                if new != data:
+                    counts["bin (overlaps cut)"] = counts.get("bin (overlaps cut)", 0) + 1
+                open(os.path.join(a.out, name), "wb").write(new)
+                counts[ext] = counts.get(ext, 0) + 1
             else:
                 shutil.copyfile(src, os.path.join(a.out, name))
                 counts[ext] = counts.get(ext, 0) + 1

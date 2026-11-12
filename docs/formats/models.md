@@ -38,6 +38,11 @@ Every model has one node/bone. Material names are mostly the placeholder `a`. Th
 Vertex (36 bytes): `s32 bone; f32 pos[3]; f32 normal[3]; f32 uv[2]`. File size is always `96 + 36·N`.
 These are non-indexed triangle lists, as drawn by `glDrawArrays(GL_TRIANGLES)` on iOS.
 
+Some models contain coplanar, same-facing triangles that overlap an earlier one (inside a model,
+and a car's `_access` / `_window` parts against its `_body`, which the game draws first with the
+same transform). With GL_LESS the earlier triangle wins; the 3DS GPU z-fights them instead.
+`tools/smd_dedupe.py` (run by `tools/build_romfs.py`) cuts the hidden parts out at build time.
+
 3DS: load the vertex block as is. The attribute buffer starts at +0x64 (skipping the bone int) with a 36-byte stride:
 3 floats position, 3 floats normal, 2 floats UV, then one padding word. Alternatively, repack at load time.
 

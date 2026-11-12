@@ -129,12 +129,41 @@ static void apt_hook(APT_HookType type, void *param) {
     if ((unsigned)type < sizeof(k_names) / sizeof(k_names[0])) sys_log("apt: %s", k_names[type]);
 }
 
-/* Every 10 s: presented frame rate, the slowest frame and free linear memory. */
+/* Game ticks to run this frame. The game is written for a fixed 60 Hz tick (iOS drawFrame), so
+ * one tick per presented frame makes the whole game run in slow motion whenever a frame takes
+ * longer than a vsync -- while sounds play in real time: the "3, 2, 1, GO" sample finished
+ * before the countdown on screen did. Instead run as many ticks as real time has passed, in
+ * units of the LCD refresh (268111856 / 4481136 = 59.83 Hz, so a full-speed frame is exactly
+ * one tick), rounded to the nearest so vsync jitter doesn't alternate 0 and 2. At least one
+ * (the rendering tick), at most MAX_TICKS: past that (loading, HOME Menu) the game slows down
+ * rather than jumping ahead. */
+#define VSYNC_SYSTICKS 4481136
+#define MAX_TICKS 4
+static int s_ticks_run;
+static int ticks_due(void) {
+    static u64 s_prev;
+    static s64 s_owed;
+    u64 now = svcGetSystemTick();
+    if (!s_prev) s_prev = now - VSYNC_SYSTICKS * (60 / sys_render_hz());
+    s_owed += (s64)(now - s_prev);
+    s_prev = now;
+    int n = (int)((s_owed + VSYNC_SYSTICKS / 2) / VSYNC_SYSTICKS);
+    if (n < 1) n = 1;
+    if (n > MAX_TICKS) n = MAX_TICKS;
+    s_owed -= (s64)n * VSYNC_SYSTICKS;
+    if (s_owed > VSYNC_SYSTICKS) s_owed = VSYNC_SYSTICKS;
+    if (s_owed < -VSYNC_SYSTICKS) s_owed = -VSYNC_SYSTICKS;
+    s_ticks_run += n;
+    return n;
+}
+
+/* Every 10 s: presented frame rate, game ticks per second (60 = full speed), the slowest frame
+ * and free linear memory. */
 static void perf_frame(void) {
 #ifdef DEBUG_LOG
     static uint32_t s_start, s_last, s_frames, s_worst;
     uint32_t now = sys_ms();
-    if (!s_start) { s_start = s_last = now; return; }
+    if (!s_start) { s_start = s_last = now; s_ticks_run = 0; return; }
     uint32_t dt = now - s_last;
     s_last = now;
     if (dt > s_worst) s_worst = dt;
@@ -142,6 +171,8 @@ static void perf_frame(void) {
     uint32_t span = now - s_start;
     if (span >= 10000) {
         uint32_t fps10 = s_frames * 10000 / span;
+        uint32_t tps = (uint32_t)s_ticks_run * 1000 / span;
+        s_ticks_run = 0;
         /* memory: what is free now, and the peak use since boot, so a run on a big console
          * tells what a small one needs */
         static uint32_t s_lin_min = 0xffffffffu, s_heap_max;
@@ -149,9 +180,10 @@ static void perf_frame(void) {
         struct mallinfo mi = mallinfo();
         if (lin < s_lin_min) s_lin_min = lin;
         if ((uint32_t)mi.uordblks > s_heap_max) s_heap_max = (uint32_t)mi.uordblks;
-        sys_log("perf: %lu.%lu fps, slowest frame %lu ms, linear free %lu KB (peak use %lu KB), "
-                "malloc %lu KB (peak %lu KB)",
-                (unsigned long)(fps10 / 10), (unsigned long)(fps10 % 10), (unsigned long)s_worst,
+        sys_log("perf: %lu.%lu fps, %lu game ticks/s, slowest frame %lu ms, linear free %lu KB "
+                "(peak use %lu KB), malloc %lu KB (peak %lu KB)",
+                (unsigned long)(fps10 / 10), (unsigned long)(fps10 % 10), (unsigned long)tps,
+                (unsigned long)s_worst,
                 (unsigned long)(lin / 1024),
                 (unsigned long)((g_heap_info.linear - s_lin_min) / 1024),
                 (unsigned long)(mi.uordblks / 1024), (unsigned long)(s_heap_max / 1024));
@@ -190,12 +222,12 @@ int main(int argc, char **argv) {
 #endif
 
     app_init();
-    int ticks = 60 / sys_render_hz();
     while (true) {
         sys_stage("system (aptMainLoop)");
         if (!aptMainLoop() || s_quit) break;
         sys_stage("game");
         gfxGL_BeginFrame();
+        int ticks = ticks_due();
         for (int i = 0; i < ticks; i++) app_tick(i == ticks - 1);
         sys_stage("render");
         gfxGL_EndFrame();

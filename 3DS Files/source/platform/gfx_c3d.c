@@ -71,6 +71,8 @@ typedef struct {
     /* matrices: row-major 4x4 for uniforms */
     C3D_Mtx proj, mv, tm;
     bool persp;
+    bool wbuf;    /* perspective draw with linear (W-buffer) depth, see fill_common */
+    float wscale; /* GPUREG_DEPTHMAP_SCALE for the W-buffer: -1 / near */
     C3D_FVec color, lpos, lamb, ldif, lflag, tcflip;
     /* state */
     GLuint tex;
@@ -119,7 +121,7 @@ static u8 *s_ring[2];
 static u32 s_ring_off;
 static int s_ring_idx;
 static C3D_FogLut s_foglut;
-static float s_foglut_key[4] = {-1, -1, -1, -1};
+static float s_foglut_key[5] = {-1, -1, -1, -1, -1};
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -314,10 +316,13 @@ static void set_fog(const Packet *p) {
         return;
     }
     if (s_foglut_key[0] != p->fog_near || s_foglut_key[1] != p->fog_far ||
-        s_foglut_key[2] != p->fog_start || s_foglut_key[3] != p->fog_end) {
+        s_foglut_key[2] != p->fog_start || s_foglut_key[3] != p->fog_end ||
+        s_foglut_key[4] != (float)p->wbuf) {
         float data[256];
         for (int i = 0; i <= 128; i++) {
-            float z = FogLut_CalcZ(i / 128.0f, p->fog_near, p->fog_far);
+            /* the fog LUT is indexed by the fragment's depth value: linear with the W-buffer */
+            float z = p->wbuf ? p->fog_far - (i / 128.0f) * (p->fog_far - p->fog_near)
+                              : FogLut_CalcZ(i / 128.0f, p->fog_near, p->fog_far);
             float v = (p->fog_end - z) / (p->fog_end - p->fog_start);
             if (v < 0) v = 0;
             if (v > 1) v = 1;
@@ -329,6 +334,7 @@ static void set_fog(const Packet *p) {
         s_foglut_key[1] = p->fog_far;
         s_foglut_key[2] = p->fog_start;
         s_foglut_key[3] = p->fog_end;
+        s_foglut_key[4] = (float)p->wbuf;
     }
     C3D_FogGasMode(GPU_FOG, GPU_PLAIN_DENSITY, false);
     C3D_FogColor(p->fog_color);
@@ -386,6 +392,7 @@ static void replay(const Packet *p, int scr_w, float eye) {
                       ? ((p->clear_mask & GL_COLOR_BUFFER_BIT ? GPU_WRITE_COLOR : 0) |
                          (p->clear_mask & GL_DEPTH_BUFFER_BIT ? GPU_WRITE_DEPTH : 0))
                       : (p->depth_write ? GPU_WRITE_ALL : GPU_WRITE_COLOR));
+    C3D_DepthMap(!p->wbuf, p->wbuf ? p->wscale : -1.0f, 0.0f);
     C3D_CullFace(p->cull ? p->cull_mode : GPU_CULL_NONE);
     if (p->blend)
         C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, p->src, p->dst, p->src, p->dst);
@@ -712,6 +719,23 @@ static void final_projection(C3D_Mtx *out, const float *proj) {
 static void fill_common(Packet *p) {
     final_projection(&p->proj, s_m[1]);
     p->persp = s_m[1][11] != 0.0f;
+    /* Depth for perspective draws uses the W-buffer. With the Z-buffer (z/w) the game's near
+     * plane of 10 puts everything past ~250 units into the bottom 4% of the depth range, and
+     * the 3DS GPU's depth interpolation is too coarse there: surfaces a few units apart (a
+     * face and the ears behind it, a car body and the driver inside) showed through each other
+     * and flickered on hardware, though not in emulators. The W-buffer stores
+     *   depth = z' * scale  (z' = clip z after zfix = n (d - f) / (f - n), d = eye distance)
+     * with scale = -1/n, i.e. (f - d) / (f - n): linear in distance, near 1, far 0, so the
+     * GL_LESS -> GPU_GREATER mapping and the clear value 0 stay as they are. */
+    p->wbuf = false;
+    if (p->persp && s_m[1][11] == -1.0f) {
+        const float *m = s_m[1];
+        float n = m[14] / (m[10] - 1.0f), f = m[14] / (m[10] + 1.0f);
+        if (n > 0.0f && f > n) {
+            p->wbuf = true;
+            p->wscale = -1.0f / n;
+        }
+    }
     to_c3d(&p->mv, s_m[0]);
     to_c3d(&p->tm, s_m[2]);
     p->color = FVec4_New(s_color[0], s_color[1], s_color[2], s_color[3]);
