@@ -1,0 +1,36 @@
+# PixelRacing-3DS: the repository holds the port's source, the tools that build
+# the RomFS/banner/CIA, and the format notes. Everything else in this folder is
+# local working material: the original game files, extracted assets, builds,
+# Ghidra exports and session notes.
+
+# ---------------------------------------------------------------- top level
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/Makefile
+!/src/
+!/tools/
+!/decomp/
+!/resources/
+!/docs/
+
+# Left out on purpose (covered by /* above):
+#   iOS Files & Source/, Wii Files & Source/   original game files (not ours to share)
+#   3DS Files/                                 built CIA/.3dsx/.elf
+#   build/, romfs/, out/, scratch_*/           extracted assets, build output, diagnostics
+#   TASKS.md, HANDOFF.md, CONTINUE.MD, PORT_PROGRESS.MD, TESTER_NOTES.md
+#                                              working notes and tester notes
+
+# ---------------------------------------------------------------- anywhere
+.claude/
+__pycache__/
+*.pyc
+*.tmp
+*.bak
+Thumbs.db
+# Ghidra pseudo-C dumps are derived from the original binary: keep them local.
+/decomp/raw/
+/decomp/raw_wii/
+# Third-party binaries copied in from other projects.
+/tools/3ds-bin/
