@@ -196,6 +196,8 @@ void gfxGL_Exit(void);
 /* Frame bracket: everything the game draws between these goes to `screen`. */
 void gfxGL_BeginFrame(void);
 void gfxGL_SetScreen(GfxScreen screen);
+/* Drop what was drawn since gfxGL_BeginFrame (a game tick whose picture is not shown). */
+void gfxGL_DiscardDraws(void);
 void gfxGL_EndFrame(void);
 /* Stereo: interocular strength from the 3D slider (0 = off). Applied to perspective draws. */
 void gfxGL_SetStereo(float iod);

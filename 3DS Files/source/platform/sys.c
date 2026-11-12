@@ -228,7 +228,14 @@ int main(int argc, char **argv) {
         sys_stage("game");
         gfxGL_BeginFrame();
         int ticks = ticks_due();
-        for (int i = 0; i < ticks; i++) app_tick(i == ticks - 1);
+        for (int i = 0; i < ticks; i++) {
+            /* The game draws on every tick. Only the last tick of a frame is shown: drop what
+             * the earlier ones drew, or the scene is replayed once per tick on top of itself
+             * (hair through faces where the game doesn't clear depth in between, and the GPU
+             * doing the work twice). */
+            if (i > 0) gfxGL_DiscardDraws();
+            app_tick(i == ticks - 1);
+        }
         sys_stage("render");
         gfxGL_EndFrame();
         perf_frame();

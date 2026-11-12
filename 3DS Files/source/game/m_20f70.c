@@ -988,9 +988,12 @@ void fn_00023fb0(int v)
             uint32_t c;
             int cr, cg, cb;
 
-            /* sky (tex 0xa4) above the horizon */
+            /* sky (tex 0xa4) above the horizon. Port: both strips start one strip width
+             * (half the screen) further left and run one further right, and the ground reaches
+             * half a screen below the bottom, so a rolled horizon (-tilt about the screen
+             * centre) never uncovers the corners; the iOS strips ended at the screen edges. */
             fn_00004fb4(r & 0xff, g & 0xff, b & 0xff, a);
-            for (x = sx_off; x < G_S32(0x40368); x = (int)((float)x + wf))
+            for (x = sx_off - (int)wf; x < G_S32(0x40368) + (int)wf; x = (int)((float)x + wf))
                 fn_0000526c(0xa4, (float)x, G_F32(0x48288) - skyh, wf, skyh, 0.95f, 0.0f, 0.0f,
                             1.0f, 1.0f, -tilt, (float)G_S32(0x4036c), (float)G_S32(0x40378), 0);
             /* ground below it, tinted from the sky colour */
@@ -1005,9 +1008,9 @@ void fn_00023fb0(int v)
             if (cb > 0xff)
                 cb = -1;
             fn_00004fb4(cr & 0xff, cg & 0xff, cb & 0xff, 0xff);
-            for (x = sx_off; x < G_S32(0x40368); x = (int)((float)x + wf))
+            for (x = sx_off - (int)wf; x < G_S32(0x40368) + (int)wf; x = (int)((float)x + wf))
                 fn_0000526c(0xa4, (float)x, G_F32(0x48288), wf,
-                            (float)G_S32(0x40374) - G_F32(0x48288) + 2.0f, 0.95f, 0.0f, 0.0f,
+                            (float)G_S32(0x40374) * 1.5f - G_F32(0x48288) + 2.0f, 0.95f, 0.0f, 0.0f,
                             1.0f, 1.0f, -tilt, (float)G_S32(0x4036c), (float)G_S32(0x40378), 2);
         }
         /* sun (tex 0xa1) */

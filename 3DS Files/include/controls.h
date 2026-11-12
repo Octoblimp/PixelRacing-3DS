@@ -25,6 +25,9 @@ uint32_t controls_key(int choice);
 /* Steering this tick, -1 (left) .. 1 (right), from the D-pad, the Circle Pad and (when chosen)
  * the tilt of the console. */
 float controls_steer(void);
+/* True when this tick's steering came from tilting the console (not the pads): the game's
+ * "Tilting Horizon" rolls the view only then. */
+bool controls_tilting(void);
 
 /* The menu. controls_menu_update runs once per tick and returns true while the menu is open
  * (the game must not see any input then); controls_menu_draw draws the bottom screen. */

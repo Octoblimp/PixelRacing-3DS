@@ -12,6 +12,7 @@
  * State 0 always ends with fn_0000a40c() (music selection); states 6, 7 and 8 only on the frame
  * they hand over to another state; state 9 calls it itself when leaving. */
 #include "ios.h"
+#include "controls.h"
 
 /* Race recording (fn_00009dc0). Original: 200000 frames per player, snapshot stride 0x277830
  * (1562 * 0x678) per car, 16 cars. 3DS: 36864 frames (10.24 min at 60 ticks/s, a multiple of
@@ -1540,8 +1541,12 @@ void fn_00005ac4(int render)
     float steer = (fabsf(tilt) + -2.0f) * sgn * 1.2f;
     G_F32(0x3f824) = steer;
     float c = cosf(accel[2] * 0.0174533f);
+    /* 0x3f820: the "Tilting Horizon" roll (camera and sky), smoothed. On the iPhone every turn
+     * was a tilt of the device. Port: only while the console itself is tilted to steer; with
+     * the Circle Pad or the D-pad the screen doesn't turn, so the horizon stays level. */
+    float roll = controls_tilting() ? steer * c / 3.0f : 0.0f;
     float old = G_F32(0x3f820);
-    G_F32(0x3f820) = old + (steer * c / 3.0f - old) / 3.0f;   /* smoothed steering */
+    G_F32(0x3f820) = old + (roll - old) / 3.0f;
 
     switch (G_S32(0x3f840)) {
     case 0:

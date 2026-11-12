@@ -136,18 +136,29 @@ static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ?
 /* Tilt: the console's roll about the axis through the screen, from the gravity direction in
  * the screen plane, so it reads the same however far back the console is tipped. Full lock at
  * tilt_range degrees, with 2 degrees of dead zone in the middle. */
+/* Tilt = how far the console's left-right axis dips below level, asin(g.x / |g|), the same
+ * measure as the iPhone version (its accelerometer's long axis). It means the same however far
+ * back the console is held. (Build 5 used the turn on the screen plane, atan2(x, -y), which
+ * grows without bound as the console leans back: at 60 degrees back a 20 degree tilt read as
+ * 30. Recorded on hardware, 2026-11-12.) */
 static float tilt_steer(void) {
     float g[3];
     input_accel_g(g);
-    if (hypotf(g[0], g[1]) < 0.25f) return s_tilt_last; /* lying flat: roll is meaningless */
-    float roll = atan2f(g[0], -g[1]) * (180.0f / (float)M_PI);
+    float mag = sqrtf(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+    if (mag < 0.5f) return s_tilt_last; /* falling or shaken: no usable gravity */
+    float roll = asinf(clampf(g[0] / mag, -1.0f, 1.0f)) * (180.0f / (float)M_PI);
     float a = fabsf(roll) - 2.0f;
     float m = a <= 0.0f ? 0.0f : clampf(a / ((float)s_c.tilt_range - 2.0f), 0.0f, 1.0f);
     s_tilt_last = roll < 0.0f ? -m : m;
     return s_tilt_last;
 }
 
+static bool s_tilting; /* this tick's steering came from the tilt of the console */
+
+bool controls_tilting(void) { return s_tilting; }
+
 static float steer_now(void) {
+    s_tilting = false;
     uint32_t held = input_held();
     int d = ((held & KEY_DRIGHT) ? 1 : 0) - ((held & KEY_DLEFT) ? 1 : 0);
     if (d) {
@@ -167,6 +178,7 @@ static float steer_now(void) {
         if (x < 0.0f) stick = -stick;
     }
     if (s_c.steer == STEER_PAD || stick != 0.0f) return stick;
+    s_tilting = true;
     return tilt_steer();
 }
 

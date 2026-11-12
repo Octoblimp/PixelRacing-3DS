@@ -301,6 +301,14 @@ void gfxGL_BeginFrame(void) {
     s_screen = GFX_SCREEN_TOP;
 }
 
+/* Forget the draws recorded so far this frame (sys.c: ticks that are not shown). The ring
+ * side stays the same: the other side may still be in use by the GPU. */
+void gfxGL_DiscardDraws(void) {
+    s_npk = 0;
+    s_ring_off = 0;
+    s_screen = GFX_SCREEN_TOP;
+}
+
 void gfxGL_SetScreen(GfxScreen screen) {
     s_screen = screen;
     s_vp[0] = s_vp[1] = 0;

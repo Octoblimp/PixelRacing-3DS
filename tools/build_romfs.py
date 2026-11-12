@@ -5,7 +5,8 @@ Usage:  python -I tools/build_romfs.py [--raw build/ios_raw] [--out "3DS Files/r
 
 Run tools/extract_ios.py first. Output layout (flat, like the iOS bundle; the port's fs layer
 drops the Wii-style directories the game code asks for, as the iOS build did):
-  *.t3x          textures (tex3ds; rgb8 if fully opaque, else rgba8), padded to power-of-two
+  *.t3x          textures (tex3ds; rgb8 if fully opaque, else rgba8), padded to power-of-two;
+                 buttons.png shows A/B for the Wii Remote's 2/1 (tools/relabel_buttons.py)
   textures.txt   name  width height pot_width pot_height format   (one line per texture)
   *.bin          models ("SMD Reference bin File", see docs/formats/models.md), with hidden
                  coplanar overlaps cut out by tools/smd_dedupe.py (a car's access part and
@@ -27,6 +28,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pngio  # noqa: E402
+import relabel_buttons  # noqa: E402
 import smd_dedupe  # noqa: E402
 
 IMG_LO, IMG_HI = 0x3B000, 0x8C000
@@ -94,6 +96,8 @@ def main():
                 continue
             if ext == ".png":
                 w, h, rgba, _ = pngio.read_png(open(src, "rb").read())
+                if name == "buttons.png":  # Wii Remote "1"/"2" -> the 3DS's B/A
+                    rgba = relabel_buttons.relabel(w, h, rgba)
                 opaque = all(v == 255 for v in rgba[3::4])
                 pw, ph, padded = pngio.pad_pot(w, h, rgba)
                 fmt = "rgb8" if opaque else "rgba8"
