@@ -16,6 +16,7 @@
 # Left out on purpose (covered by /* above):
 #   iOS Files & Source/, Wii Files & Source/   original game files (not ours to share)
 #   build/, romfs/, out/, scratch_*/           extracted assets, build output, diagnostics
+#   Tester Builds/                             CIA/.3dsx/.elf handed to testers (hold game data)
 #   TASKS.md, HANDOFF.md, CONTINUE.MD, PORT_PROGRESS.MD, TESTER_NOTES.md
 #                                              working notes and tester notes
 

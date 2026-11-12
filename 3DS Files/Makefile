@@ -71,7 +71,9 @@ CFLAGS	:=	-g -Wall -O2 -mword-relocations -ffunction-sections -fno-strict-aliasi
 			-Wno-unused-variable -Wno-unused-but-set-variable \
 			$(ARCH)
 CFLAGS	+=	$(INCLUDE) -D__3DS__ -std=gnu11
-# make DEBUG=1: sys_log writes sdmc:/3ds/PixelRacing3D/log.txt (and the sound trace).
+# The debug log (sdmc:/PixelRacing_debug.txt, .3dsx: sdmc:/3ds/) is on by default for tester builds;
+# make DEBUG=0 leaves it out.
+DEBUG	?=	1
 ifeq ($(DEBUG),1)
 CFLAGS	+=	-DDEBUG_LOG
 endif

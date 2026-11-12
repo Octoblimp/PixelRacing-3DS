@@ -220,6 +220,19 @@ void app_init(void) {
      * shows the 3D Pixel Racing logo (tools/banner/make_banner.py renders it from the Wii
      * banner) instead of black. */
     gfxGL_SetBottomIdle("romfs:/bottom_logo.t3x", 320, 240);
+    sys_log("app_init done");
+}
+
+/* Debug log: the game's menu/race state (0x3f848, see m_0a184.c) and the tick's screen
+ * state (0x3f840) whenever either changes, so a crash report shows where the player was. */
+static void log_state(void) {
+    static int s_state = -1, s_screen = -1;
+    int state = G_S32(0x3f848), screen = G_S32(0x3f840);
+    if (state != s_state || screen != s_screen) {
+        sys_log("state %d screen %d", state, screen);
+        s_state = state;
+        s_screen = screen;
+    }
 }
 
 /* drawFrame without the iOS pacing (sys.c paces by vsync): the first call runs the
@@ -239,6 +252,7 @@ void app_tick(bool render) {
     G_U8(0x3e918) = render;
     fn_00005ac4(render ? 1 : 0);
     input_end_tick();
+    log_state();
 }
 
 void app_exit(void) {

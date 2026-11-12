@@ -18,5 +18,7 @@ int sys_render_hz(void);
 uint32_t sys_ms(void);
 /* Ask the main loop to quit (returns to HOME Menu / hbmenu). */
 void sys_quit(void);
-/* Debug log to sdmc:/3ds/PixelRacing3D/log.txt (no-op unless DEBUG_LOG is defined). */
+/* Debug log to sdmc:/PixelRacing_debug.txt (CIA) or sdmc:/3ds/PixelRacing_debug.txt (.3dsx),
+ * time-stamped; the previous run is kept as PixelRacing_debug_prev.txt. On by default;
+ * `make DEBUG=0` builds it out. */
 void sys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

@@ -32,8 +32,10 @@ powershell -ExecutionPolicy Bypass -File tools/build.ps1          # -> 3DS Files
 powershell -ExecutionPolicy Bypass -File tools/build.ps1 cia      # -> 3DS Files/PixelRacing-3DS.cia
 ```
 devkitPro's Makefile template can't run from a path with spaces, so `tools/build.ps1`
-substitutes drive letters around the build. Pass `DEBUG=1` to log to
-`sdmc:/3ds/PixelRacing3D/log.txt`. `make_banner.py` also renders the bottom-screen logo
+substitutes drive letters around the build. The debug log
+(`sdmc:/PixelRacing_debug.txt` for the CIA, `sdmc:/3ds/PixelRacing_debug.txt` for the .3dsx,
+previous run in `PixelRacing_debug_prev.txt`) is on by default;
+`DEBUG=0` builds it out. `make_banner.py` also renders the bottom-screen logo
 that `build_romfs.py` picks up, so run it first.
 
 Controls: A gas, B brake, D-pad / Circle Pad steer, R or X the race button at index 7 (its role is not confirmed yet),
