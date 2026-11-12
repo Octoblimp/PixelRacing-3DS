@@ -16,6 +16,7 @@ typedef struct {
     bool moved;     /* active last tick too (px/py valid) */
     float x, y;     /* 0..1 over the virtual screen */
     float px, py;   /* previous position */
+    bool virt;      /* a physical button holding one of the game's buttons, not a finger */
 } InputTouch;
 
 void input_init(void);

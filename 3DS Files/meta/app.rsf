@@ -29,14 +29,15 @@ AccessControlInfo:
    - DirectSdmc
 
   MemoryType                    : Application
-  # Old 3DS: 80MB application region ("dev2" split: 80 app / 28 system / 20 base).
-  # The HOME Menu stays resident at this size on most firmwares only barely, so like any
-  # extended-memory title the app is launched with the HOME Menu terminated and the console
-  # returns to it on exit. Only the CIA gets this; a .3dsx inherits its host's memory.
-  SystemMode                    : 80MB
-  # New 3DS: 124MB application region (124 app / 100 system / 32 base). The kernel picks
-  # SystemMode or SystemModeExt by console model, so one CIA runs on both.
-  SystemModeExt                 : 124MB
+  # Old 3DS: Extended Memory Mode, a 96MB application region. New 3DS: its own 178MB mode.
+  # The console picks SystemMode or SystemModeExt by model, so one CIA runs on both. These
+  # are the two modes other extended-memory ports run with on retail hardware (an earlier
+  # build asked for 80MB / 124MB and got the plain 64MB instead). In both modes the HOME
+  # Menu is closed while the game runs: the HOME button does nothing and quitting the game
+  # restarts the console back into the HOME Menu. Only the CIA gets this; a .3dsx inherits
+  # its host's memory.
+  SystemMode                    : 96MB
+  SystemModeExt                 : 178MB
   IdealProcessor                : 0
   AffinityMask                  : 1
   Priority                      : 16

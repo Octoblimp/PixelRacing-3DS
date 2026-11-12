@@ -22,3 +22,12 @@ void sys_quit(void);
  * time-stamped; the previous run is kept as PixelRacing_debug_prev.txt. On by default;
  * `make DEBUG=0` builds it out. */
 void sys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* Names what the main loop is doing right now ("game", "render", ...). A watchdog thread logs
+ * it if the main loop stops advancing, so a freeze on hardware can be placed. */
+void sys_stage(const char *what);
+
+/* What heapcfg.c asked the kernel for at boot and what it got (bytes). */
+typedef struct {
+    uint32_t avail, linear, heap, linear_tries;
+} HeapInfo;
+extern HeapInfo g_heap_info;

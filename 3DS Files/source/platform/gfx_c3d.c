@@ -23,6 +23,7 @@
 #include <string.h>
 #include "gles.h"
 #include "gl_shbin.h"
+#include "sys.h"
 
 #define MAX_TEXTURES 512
 #define MAX_PACKETS 2048
@@ -63,6 +64,7 @@ typedef struct {
     u32 buf_addr; /* linear address of interleaved or single buffer */
     u16 stride;
     bool interleaved_direct; /* buffer holds all enabled attribs with their own offsets */
+    bool game_vb;            /* buf_addr points at the game's own vertex data (not the ring) */
     u32 attr_addr[3];        /* per-attribute addresses when not interleaved */
     u16 attr_stride[3];
     float fixed_nrm[3], fixed_tc[2];
@@ -109,8 +111,10 @@ static GLint s_vp[4] = {0, 0, 400, 240}, s_sc[4] = {0, 0, 400, 240};
 static GfxScreen s_screen = GFX_SCREEN_TOP;
 static float s_iod;
 
-static Packet *s_pk;
+static Packet *s_pk, *s_pkbuf[2];
 static int s_npk, s_last_draws;
+static int s_prev_npk, s_frame;
+static float s_cmd_peak;
 static u8 *s_ring[2];
 static u32 s_ring_off;
 static int s_ring_idx;
@@ -262,7 +266,9 @@ void gfxGL_Init(void) {
     u_tcflip = shaderInstanceGetUniformLocation(s_prog.vertexShader, "tcFlip");
     C3D_BindProgram(&s_prog);
 
-    s_pk = malloc(sizeof(Packet) * MAX_PACKETS);
+    s_pkbuf[0] = malloc(sizeof(Packet) * MAX_PACKETS);
+    s_pkbuf[1] = malloc(sizeof(Packet) * MAX_PACKETS);
+    s_pk = s_pkbuf[0];
     s_ring[0] = linearAlloc(RING_SIZE);
     s_ring[1] = linearAlloc(RING_SIZE);
     for (int i = 0; i < 3; i++) mtx_identity(s_m[i]);
@@ -273,7 +279,8 @@ void gfxGL_Exit(void) {
         if (s_tex[i].has_data) C3D_TexDelete(&s_tex[i].tex);
     linearFree(s_ring[0]);
     linearFree(s_ring[1]);
-    free(s_pk);
+    free(s_pkbuf[0]);
+    free(s_pkbuf[1]);
     shaderProgramFree(&s_prog);
     DVLB_Free(s_dvlb);
     C3D_RenderTargetDelete(s_top_l);
@@ -285,6 +292,7 @@ void gfxGL_Exit(void) {
 void gfxGL_SetStereo(float iod) { s_iod = iod; }
 
 void gfxGL_BeginFrame(void) {
+    s_pk = s_pkbuf[s_frame & 1];
     s_npk = 0;
     s_ring_idx ^= 1;
     s_ring_off = 0;
@@ -342,11 +350,16 @@ static void fb_rect(int scr_w, const s16 *r, u32 *x, u32 *y, u32 *w, u32 *h) {
 static void replay(const Packet *p, int scr_w, float eye) {
     u32 x, y, w, h;
     fb_rect(scr_w, p->vp, &x, &y, &w, &h);
+    if (!w || !h) return; /* a 0-size viewport is undefined on the PICA: skip the draw */
     C3D_SetViewport(x, y, w, h);
     if (p->scissor) {
         u32 sx, sy, sw, sh;
         fb_rect(scr_w, p->sc, &sx, &sy, &sw, &sh);
-        C3D_SetScissor(GPU_SCISSOR_NORMAL, sx, sy, sx + sw, sy + sh);
+        u32 ex = sx + sw, ey = sy + sh;
+        if (ex > 240) ex = 240;
+        if (ey > (u32)scr_w) ey = scr_w;
+        if (sx >= ex || sy >= ey) return; /* scissored away entirely */
+        C3D_SetScissor(GPU_SCISSOR_NORMAL, sx, sy, ex, ey);
     } else {
         C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
     }
@@ -461,53 +474,168 @@ void gfxGL_SetBottomIdle(const char *t3x_path, int w, int h) {
     s_bound = keep;
 }
 
-static void draw_bottom_idle(void) {
-    /* save */
-    GLuint bound = s_bound;
-    GLArray va = s_va, na = s_na, ta = s_ta;
-    GLenum matmode = s_matmode;
+/* Overlays: drawing the port's own screens (the bottom-screen logo, the controls menu) through
+ * the GL layer in the middle of the game's frame. Everything the game can set is saved on
+ * Begin and put back on End, so the game's next draw sees exactly the state it left. */
+typedef struct {
+    GLuint bound;
+    GLArray va, na, ta;
+    GLenum matmode, depth_func, cull_face, bsrc, bdst;
     float m[3][16], color[4];
-    memcpy(m, s_m, sizeof m);
-    memcpy(color, s_color, sizeof color);
-    bool lighting = s_lighting, texturing = s_texturing, blend = s_blend,
-         depth_test = s_depth_test, cull = s_cull, scissor = s_scissor, fog = s_fog;
+    bool lighting, light0, colormat, texturing, blend, depth_test, depth_write, cull, scissor, fog;
     GLint vp[4], sc[4];
-    memcpy(vp, s_vp, sizeof vp);
-    memcpy(sc, s_sc, sizeof sc);
-    GfxScreen screen = s_screen;
+    GfxScreen screen;
+} GLSnap;
+static GLSnap s_snap;
+static int s_overlay_depth;
 
-    static const float pos[8] = {0, 0, 320, 0, 0, 240, 320, 240};
-    float tc[8] = {0, s_idle_v, s_idle_u, s_idle_v, 0, 0, s_idle_u, 0}; /* t = 0 at the top */
-    gfxGL_SetScreen(GFX_SCREEN_BOTTOM);
-    s_lighting = s_blend = s_depth_test = s_cull = s_scissor = s_fog = false;
+void gfxGL_OverlayBegin(GfxScreen screen) {
+    if (s_overlay_depth++) return; /* nested: the outer Begin already saved */
+    GLSnap *s = &s_snap;
+    s->bound = s_bound;
+    s->va = s_va, s->na = s_na, s->ta = s_ta;
+    s->matmode = s_matmode, s->depth_func = s_depth_func, s->cull_face = s_cull_face;
+    s->bsrc = s_bsrc, s->bdst = s_bdst;
+    memcpy(s->m, s_m, sizeof s->m);
+    memcpy(s->color, s_color, sizeof s->color);
+    s->lighting = s_lighting, s->light0 = s_light0, s->colormat = s_colormat;
+    s->texturing = s_texturing, s->blend = s_blend, s->depth_test = s_depth_test;
+    s->depth_write = s_depth_write, s->cull = s_cull, s->scissor = s_scissor, s->fog = s_fog;
+    memcpy(s->vp, s_vp, sizeof s->vp);
+    memcpy(s->sc, s_sc, sizeof s->sc);
+    s->screen = s_screen;
+
+    /* a plain 2D setup: pixels, origin top-left, alpha blending, white, nothing else */
+    int w = screen == GFX_SCREEN_TOP ? 400 : 320;
+    gfxGL_SetScreen(screen);
+    s_lighting = s_depth_test = s_cull = s_scissor = s_fog = s_colormat = false;
+    s_depth_write = false;
     s_texturing = true;
-    glBindTexture(GL_TEXTURE_2D, s_idle_tex);
+    s_blend = true;
+    s_bsrc = GL_SRC_ALPHA, s_bdst = GL_ONE_MINUS_SRC_ALPHA;
+    glViewport(0, 0, w, 240);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    glOrthof(0, 320, 0, 240, -1, 1);
+    glOrthof(0, (float)w, 240, 0, -1, 1);
     glMatrixMode(GL_TEXTURE);
     glLoadIdentity();
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     s_color[0] = s_color[1] = s_color[2] = s_color[3] = 1.0f;
+    s_va.enabled = true;
     s_na.enabled = false;
+    s_ta.enabled = false;
+}
+
+void gfxGL_OverlayEnd(void) {
+    if (s_overlay_depth <= 0 || --s_overlay_depth) return;
+    const GLSnap *s = &s_snap;
+    s_bound = s->bound;
+    s_va = s->va, s_na = s->na, s_ta = s->ta;
+    s_matmode = s->matmode, s_depth_func = s->depth_func, s_cull_face = s->cull_face;
+    s_bsrc = s->bsrc, s_bdst = s->bdst;
+    memcpy(s_m, s->m, sizeof s_m);
+    memcpy(s_color, s->color, sizeof s_color);
+    s_lighting = s->lighting, s_light0 = s->light0, s_colormat = s->colormat;
+    s_texturing = s->texturing, s_blend = s->blend, s_depth_test = s->depth_test;
+    s_depth_write = s->depth_write, s_cull = s->cull, s_scissor = s->scissor, s_fog = s->fog;
+    memcpy(s_vp, s->vp, sizeof s_vp);
+    memcpy(s_sc, s->sc, sizeof s_sc);
+    s_screen = s->screen;
+}
+
+void gfxGL_OverlayRect(float x, float y, float w, float h, float r, float g, float b, float a) {
+    float v[8] = {x, y, x + w, y, x, y + h, x + w, y + h};
+    bool tex = s_texturing, ta = s_ta.enabled;
+    s_texturing = false;
+    s_ta.enabled = false;
+    glColor4f(r, g, b, a);
     glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, v);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    s_texturing = tex;
+    s_ta.enabled = ta;
+}
+
+static void draw_bottom_idle(void) {
+    float tc[8] = {0, 0, s_idle_u, 0, 0, s_idle_v, s_idle_u, s_idle_v}; /* y down: t = 0 on top */
+    static const float pos[8] = {0, 0, 320, 0, 0, 240, 320, 240};
+    gfxGL_OverlayBegin(GFX_SCREEN_BOTTOM);
+    s_blend = false;
+    glBindTexture(GL_TEXTURE_2D, s_idle_tex);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
     glVertexPointer(2, GL_FLOAT, 0, pos);
     glTexCoordPointer(2, GL_FLOAT, 0, tc);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    gfxGL_OverlayEnd();
+}
 
-    /* restore */
-    s_bound = bound;
-    s_va = va, s_na = na, s_ta = ta;
-    s_matmode = matmode;
-    memcpy(s_m, m, sizeof m);
-    memcpy(s_color, color, sizeof color);
-    s_lighting = lighting, s_texturing = texturing, s_blend = blend, s_depth_test = depth_test;
-    s_cull = cull, s_scissor = scissor, s_fog = fog;
-    memcpy(s_vp, vp, sizeof vp);
-    memcpy(s_sc, sc, sizeof sc);
-    s_screen = screen;
+void gfxGL_DrawBottomIdle(void) {
+    if (s_idle_tex) draw_bottom_idle();
+}
+
+/* Debug log: one line per packet, so a GPU hang on hardware (which Azahar never shows) can be
+ * traced to the draw that caused it. */
+static void dump_frame(const char *what, int frame, const Packet *pk, int n) {
+    sys_log("gpu: %s %d, %d packets", what, frame, n);
+    for (int i = 0; i < n && i < 400; i++) {
+        const Packet *p = &pk[i];
+        const GLTex *t = p->tex < MAX_TEXTURES ? &s_tex[p->tex] : NULL;
+        sys_log("  #%d %s %s prim %x n %u vp %d,%d,%d,%d%s buf %08lx stride %u attr %u/%u %u/%u %u/%u"
+                " tex %u%s %dx%d blend %d depth %d/%d fog %d cull %d",
+                i, p->screen == GFX_SCREEN_TOP ? "top" : "bot", p->kind == PK_CLEAR ? "clear" : "draw",
+                (unsigned)p->prim, (unsigned)p->count, p->vp[0], p->vp[1], p->vp[2], p->vp[3],
+                p->scissor ? " sc" : "", (unsigned long)p->buf_addr, (unsigned)p->stride,
+                p->attr_fmt[0], p->attr_size[0], p->attr_fmt[1], p->attr_size[1], p->attr_fmt[2],
+                p->attr_size[2], (unsigned)p->tex, p->texturing ? "" : "(off)",
+                t && t->has_data ? t->tex.width : 0, t && t->has_data ? t->tex.height : 0,
+                p->blend, p->depth_test, p->depth_write, p->fog, p->cull);
+    }
+}
+
+/* Vertex data the GPU reads straight from the game's memory may still sit in the CPU data
+ * cache (the game may have just written it). Clean each buffer once per frame: draws mostly
+ * reuse a few buffers, so ranges are merged by start address before the cache is cleaned. */
+static void flush_game_vbs(void) {
+    enum { NR = 32 };
+    u32 lo[NR], hi[NR];
+    int n = 0;
+    for (int i = 0; i < s_npk; i++) {
+        const Packet *p = &s_pk[i];
+        if (!p->game_vb) continue;
+        u32 a = p->buf_addr, b = a + (u32)p->count * p->stride;
+        int j = 0;
+        while (j < n && (a > hi[j] + 4096 || b + 4096 < lo[j])) j++;
+        if (j < n) {
+            if (a < lo[j]) lo[j] = a;
+            if (b > hi[j]) hi[j] = b;
+        } else if (n < NR) {
+            lo[n] = a, hi[n] = b, n++;
+        } else {
+            svcFlushProcessDataCache(CUR_PROCESS_HANDLE, a, b - a);
+        }
+    }
+    for (int j = 0; j < n; j++) svcFlushProcessDataCache(CUR_PROCESS_HANDLE, lo[j], hi[j] - lo[j]);
+}
+
+/* C3D_FrameBegin(SYNCDRAW) waits for the previous frame's GPU work with no time limit, so a
+ * GPU fault freezes the console with nothing on screen and no log. Wait in steps instead and,
+ * after 2 s, log the frame that never finished. */
+static void frame_begin_watchdog(void) {
+    C3D_FrameSync();
+    u32 t0 = sys_ms();
+    bool reported = false;
+    sys_stage("render (waiting for the GPU)");
+    while (!C3D_FrameBegin(C3D_FRAME_NONBLOCK)) {
+        if (!reported && sys_ms() - t0 > 2000) {
+            reported = true;
+            sys_log("gpu: HANG -- frame %d has not finished after 2 s", s_frame - 1);
+            dump_frame("hung frame", s_frame - 1, s_pk == s_pkbuf[0] ? s_pkbuf[1] : s_pkbuf[0], s_prev_npk);
+        }
+        svcSleepThread(1000000);
+    }
+    if (reported) sys_log("gpu: frame %d finished after %lu ms", s_frame - 1, (unsigned long)(sys_ms() - t0));
+    sys_stage("render (building GPU commands)");
 }
 
 void gfxGL_EndFrame(void) {
@@ -518,7 +646,9 @@ void gfxGL_EndFrame(void) {
     }
     float iod = s_iod;
     gfxSet3D(iod > 0.0f);
-    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+    s_frame++;
+    if (s_frame <= 3) dump_frame("frame", s_frame, s_pk, s_npk);
+    frame_begin_watchdog();
     C3D_RenderTargetClear(s_top_l, C3D_CLEAR_ALL, 0x000000FF, 0);
     C3D_RenderTargetClear(s_bot, C3D_CLEAR_ALL, 0x000000FF, 0);
     if (iod > 0.0f) C3D_RenderTargetClear(s_top_r, C3D_CLEAR_ALL, 0x000000FF, 0);
@@ -537,7 +667,17 @@ void gfxGL_EndFrame(void) {
         }
     }
     GSPGPU_FlushDataCache(s_ring[s_ring_idx], s_ring_off);
+    flush_game_vbs();
+    float use = C3D_GetCmdBufUsage();
+    if (use > s_cmd_peak) {
+        s_cmd_peak = use;
+        if (use > 0.5f)
+            sys_log("gpu: command buffer %d%% full (frame %d, %d draws)", (int)(use * 100), s_frame, draws);
+    }
     C3D_FrameEnd(0);
+    if (s_frame <= 3) sys_log("gpu: frame %d submitted, %d draws, ring %lu KB, cmdbuf %d%%", s_frame,
+                              draws, (unsigned long)(s_ring_off >> 10), (int)(use * 100));
+    s_prev_npk = s_npk;
     s_last_draws = draws;
 }
 
@@ -622,6 +762,15 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     case GL_TRIANGLE_FAN: prim = GPU_TRIANGLE_FAN; break;
     default: return; /* points/lines are not used by the game */
     }
+    /* The PICA stalls on draws it can't finish (an incomplete triangle, a count that wraps to
+     * 0 in the 16-bit field), and a stalled GPU freezes the whole console. */
+    if (prim == GPU_TRIANGLES) count -= count % 3;
+    if (count < 3) return;
+    if (count > 0xFFFF) {
+        static bool s_warned;
+        if (!s_warned) { s_warned = true; sys_log("gl: draw of %ld vertices skipped", (long)count); }
+        return;
+    }
     Packet *p = new_packet(PK_DRAW);
     if (!p) return;
     p->prim = prim;
@@ -654,6 +803,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
         p->interleaved_direct = true;
         p->buf_addr = base;
         p->stride = stride;
+        p->game_vb = true; /* flushed from the CPU cache in gfxGL_EndFrame */
         for (int i = 0; i < 3; i++) {
             if (!en[i]) continue;
             p->attr_fmt[i] = type_fmt(arr[i]->type);

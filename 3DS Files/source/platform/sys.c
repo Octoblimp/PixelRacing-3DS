@@ -14,6 +14,9 @@
 
 static bool s_quit, s_n3ds;
 static u64 s_t0;
+static LightLock s_log_lock;
+static volatile const char *s_stage = "boot";
+static volatile u32 s_frames_done;
 
 bool sys_is_new3ds(void) { return s_n3ds; }
 uint32_t sys_app_mem(void) { return osGetMemRegionSize(MEMREGION_APPLICATION); }
@@ -47,6 +50,7 @@ void sys_log(const char *fmt, ...) {
     static bool s_failed, s_full;
     static uint32_t s_size;
     if (s_failed || s_full) return;
+    LightLock_Lock(&s_log_lock); /* the watchdog thread logs too */
     if (!f) {
         const char *dir = is_cia() ? "sdmc:/" : "sdmc:/3ds/";
         char path[64], prev[64];
@@ -56,7 +60,7 @@ void sys_log(const char *fmt, ...) {
         remove(prev);
         rename(path, prev);
         f = fopen(path, "w");
-        if (!f) { s_failed = true; return; }
+        if (!f) { s_failed = true; LightLock_Unlock(&s_log_lock); return; }
     }
     char line[512];
     uint32_t ms = sys_ms();
@@ -72,16 +76,48 @@ void sys_log(const char *fmt, ...) {
         fputs("[log full]\n", f);
         fflush(f);
         s_full = true;
+        LightLock_Unlock(&s_log_lock);
         return;
     }
     fputs(line, f);
     fputc('\n', f);
     fflush(f);
     s_size += len + 1;
+    LightLock_Unlock(&s_log_lock);
 #else
     (void)fmt;
 #endif
 }
+
+void sys_stage(const char *what) { s_stage = what; }
+
+/* Main-loop watchdog. A frozen main loop also freezes the HOME button, so on hardware the
+ * only trace a tester can send back is the log. This thread runs at a higher priority than
+ * the main thread on the same core and sleeps; each time it wakes it checks that a frame
+ * finished in the last 3 s, and if not it logs what the main loop was doing. */
+#ifdef DEBUG_LOG
+static volatile bool s_wd_quit;
+static void watchdog(void *arg) {
+    (void)arg;
+    u32 last = s_frames_done, since = sys_ms();
+    bool reported = false;
+    while (!s_wd_quit) {
+        svcSleepThread(500000000LL);
+        u32 now = sys_ms();
+        if (s_frames_done != last) {
+            if (reported) sys_log("watchdog: main loop running again after %lu ms",
+                                  (unsigned long)(now - since));
+            last = s_frames_done;
+            since = now;
+            reported = false;
+        } else if (!reported && now - since > 3000) {
+            sys_log("watchdog: no frame for 3 s, main loop in \"%s\" after frame %lu (normal while loading)",
+                    (const char *)s_stage, (unsigned long)last);
+            reported = true;
+        }
+    }
+}
+#endif
 
 /* Suspend / resume / sleep, so a log that stops mid-race shows whether the HOME Menu or the
  * lid was involved. */
@@ -121,6 +157,7 @@ int main(int argc, char **argv) {
     s_n3ds = n3ds;
     if (n3ds) osSetSpeedupEnable(true);
     s_t0 = svcGetSystemTick();
+    LightLock_Init(&s_log_lock);
 
     gfxInitDefault();
     romfsInit();
@@ -130,17 +167,38 @@ int main(int argc, char **argv) {
     sys_log("boot: %s, app mem %lu KB, linear free %lu KB, %d fps target",
             n3ds ? "New 3DS" : "Old 3DS", (unsigned long)(sys_app_mem() / 1024),
             (unsigned long)(linearSpaceFree() / 1024), sys_render_hz());
+    sys_log("heap: %lu KB to share, linear %lu KB (%lu tries), malloc %lu KB",
+            (unsigned long)(g_heap_info.avail >> 10), (unsigned long)(g_heap_info.linear >> 10),
+            (unsigned long)g_heap_info.linear_tries, (unsigned long)(g_heap_info.heap >> 10));
     aptHook(&s_apt_cookie, apt_hook, NULL);
+#ifdef DEBUG_LOG
+    s32 prio = 0x30;
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    Thread wd = threadCreate(watchdog, NULL, 16 * 1024, prio > 0x18 ? prio - 1 : 0x18, -2, false);
+    if (!wd) sys_log("watchdog: could not start");
+#endif
 
     app_init();
     int ticks = 60 / sys_render_hz();
-    while (aptMainLoop() && !s_quit) {
+    while (true) {
+        sys_stage("system (aptMainLoop)");
+        if (!aptMainLoop() || s_quit) break;
+        sys_stage("game");
         gfxGL_BeginFrame();
         for (int i = 0; i < ticks; i++) app_tick(i == ticks - 1);
+        sys_stage("render");
         gfxGL_EndFrame();
         perf_frame();
+        s_frames_done++;
     }
     sys_log("exit: back to the HOME Menu");
+#ifdef DEBUG_LOG
+    if (wd) {
+        s_wd_quit = true;
+        threadJoin(wd, U64_MAX);
+        threadFree(wd);
+    }
+#endif
     app_exit();
     aptUnhook(&s_apt_cookie);
 

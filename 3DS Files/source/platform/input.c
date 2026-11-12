@@ -95,13 +95,13 @@ int input_touches(InputTouch *out, int max) {
     for (int i = 0; i < BIND_SLOTS && n < max; i++) {
         Bind *b = &s_bind[i];
         if (b->keys && (s_held & b->keys))
-            out[n++] = (InputTouch){true, b->was, b->x, b->y, b->x, b->y};
+            out[n++] = (InputTouch){true, b->was, b->x, b->y, b->x, b->y, true};
     }
     for (int i = 0; i < ANALOG_SLOTS && n < max; i++) {
         Analog *a = &s_analog[i];
         if (a->active)
             out[n++] = (InputTouch){true, a->was, a->x, a->y, a->was ? a->px : a->x,
-                                    a->was ? a->py : a->y};
+                                    a->was ? a->py : a->y, true};
     }
     return n;
 }

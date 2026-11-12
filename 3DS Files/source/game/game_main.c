@@ -3,7 +3,8 @@
  *   EAGLView, AppDelegate      -> nothing (sys.c owns the GPU and the main loop)
  *   viewController drawFrame   -> app_tick()
  *   ProcessTouches:            -> feed_touches() (bottom screen into the touch table 0x4268c)
- *   accelerometer:didAccelerate: -> feed_accel() (3DS accelerometer into 0x42754)
+ *   accelerometer:didAccelerate: -> feed_steering() (the steering the player chose, as the
+ *                                  tilt the game expects, into 0x42754)
  *
  * It also provides the services ios.h declares: the memory image, the linear heap, resource
  * and document paths and the millisecond clock. */
@@ -11,6 +12,7 @@
 #include <malloc.h>
 #include <sys/stat.h>
 #include "ios.h"
+#include "controls.h"
 #include "input.h"
 
 void snd_shutdown(void); /* m_35df8.c */
@@ -111,9 +113,15 @@ uint32_t ios_ms(void) { return sys_ms(); }
 /* ProcessTouches: (touch / view size) * virtual size. The view is the iOS landscape view
  * (480x320 or 1024x768 by bit 0 of 0x3f83c); here it is whatever input.c reports, already in
  * virtual-screen units. Table entry: {u8 active; float x, y, prevx, prevy}. */
-static void feed_touches(void) {
+static void feed_touches(bool menu) {
     InputTouch t[INPUT_MAX_TOUCHES];
     int n = input_touches(t, INPUT_MAX_TOUCHES);
+    if (menu) { /* the bottom screen belongs to the controls menu; only a pause press gets through */
+        int k = 0;
+        for (int i = 0; i < n; i++)
+            if (t[i].virt) t[k++] = t[i];
+        n = k;
+    }
     float vw = (float)G_S32(0x40368), vh = (float)G_S32(0x40374);
     for (int i = 0; i < 10; i++) {
         uint8_t *e = (uint8_t *)G(0x4268c) + i * 0x14;
@@ -146,63 +154,67 @@ static void feed_touches(void) {
  * The menus read the same buttons (fn_00030bf4): 3/4 left/right, 6/5 up/down, 2 ok, 1 back.
  * A held 3DS button presses its game button by holding a virtual touch on its centre, so it
  * works wherever the game has that button active and does nothing elsewhere. */
-static const struct { uint32_t keys; int idx; } k_button_map[] = {
-    {KEY_A, 2},                      /* accelerate ("2" on the Wii Remote) */
-    {KEY_B, 1},                      /* brake / reverse ("1") */
-    {KEY_DLEFT | KEY_CPAD_LEFT, 3},  /* steer left (static controls) */
-    {KEY_DRIGHT | KEY_CPAD_RIGHT, 4},/* steer right */
-    {KEY_DUP | KEY_CPAD_UP, 6},       /* menu up (the button above the list) */
-    {KEY_DDOWN | KEY_CPAD_DOWN, 5},   /* menu down */
-    {KEY_R | KEY_X, 7},
-    {KEY_START | KEY_SELECT, 11},    /* pause / info page */
-};
+/* The game's button indexes, and which 3DS keys press them. In a race gas, brake and nitro
+ * are the player's choice (controls.c) and the Circle Pad only steers; in the menus and on
+ * the pause screen A/B are always OK/back and the Circle Pad moves through the lists. */
+enum { BTN_BRAKE = 1, BTN_GAS = 2, BTN_LEFT = 3, BTN_RIGHT = 4, BTN_DOWN = 5, BTN_UP = 6,
+       BTN_NITRO = 7, BTN_PAUSE = 11 };
+enum { NSLOTS = 8 };
 
-static void feed_buttons(void) {
+/* Racing and not paused (0x3f9e0 is the race's pause flag). */
+static bool racing(void) {
+    return G_S32(0x3f848) == 5 && G_S32(0x3f840) == 7 && !G_U8(0x3f9e0);
+}
+
+static void bind_key(int slot, int idx, uint32_t keys) {
     float vw = (float)G_S32(0x40368), vh = (float)G_S32(0x40374);
-    for (unsigned i = 0; i < sizeof k_button_map / sizeof k_button_map[0]; i++) {
-        const uint8_t *b = (const uint8_t *)G(0x40388) + k_button_map[i].idx * 0x20;
-        bool on = b[0x16] && vw > 0 && vh > 0;
-        input_bind_button((int)i, on ? k_button_map[i].keys : 0,
-                          on ? AT_F32(b, 0) / vw : 0.0f, on ? AT_F32(b, 4) / vh : 0.0f);
+    const uint8_t *b = (const uint8_t *)G(0x40388) + idx * 0x20;
+    bool on = keys && b[0x16] && vw > 0 && vh > 0;
+    input_bind_button(slot, on ? keys : 0, on ? AT_F32(b, 0) / vw : 0.0f,
+                      on ? AT_F32(b, 4) / vh : 0.0f);
+}
+
+/* menu: the controls menu is open, the game gets no buttons; pause: press the game's pause
+ * button this tick (opening the menu mid-race pauses the race first) */
+static void feed_buttons(bool menu, bool pause) {
+    if (menu) {
+        for (int i = 0; i < NSLOTS; i++) input_bind_button(i, 0, 0, 0);
+        if (pause) bind_key(0, BTN_PAUSE, KEY_SELECT);
+        return;
     }
+    const Controls *c = controls_get();
+    bool race = racing();
+    uint32_t pad_lr = race ? 0 : KEY_CPAD_LEFT | KEY_CPAD_RIGHT;
+    uint32_t pad_ud = race ? 0 : KEY_CPAD_UP | KEY_CPAD_DOWN;
+    bind_key(0, BTN_GAS, race ? controls_key(c->gas) : KEY_A);
+    bind_key(1, BTN_BRAKE, race ? controls_key(c->brake) : KEY_B);
+    bind_key(2, BTN_LEFT, KEY_DLEFT | (pad_lr & KEY_CPAD_LEFT));
+    bind_key(3, BTN_RIGHT, KEY_DRIGHT | (pad_lr & KEY_CPAD_RIGHT));
+    bind_key(4, BTN_UP, KEY_DUP | (pad_ud & KEY_CPAD_UP));
+    bind_key(5, BTN_DOWN, KEY_DDOWN | (pad_ud & KEY_CPAD_DOWN));
+    bind_key(6, BTN_NITRO, race ? controls_key(c->nitro) : KEY_R | KEY_X);
+    bind_key(7, BTN_PAUSE, KEY_START);
 }
 
-/* accelerometer:didAccelerate: stores (int)(g * 90) as float per iOS axis, negated when the
- * landscape-orientation flag 0x3ebb2 is 0. Worked through for both landscape orientations,
- * the stored values come out as x = -Yb, y = Xb, z = +-Zb (body frame of input.h), so the
- * game's steering axis (accel[1], minus half the value latched at the race start) is the 3DS
- * roll: turning the console like a wheel.
- *
- * Tilt modes (Settings, TASKS #29):
- *   TILT_IOS  the iOS reading as is (linear in g).
- *   TILT_WII  the Wii version's steering curve (Wii DOL 0x80027e40, player branch): the raw
- *             Wii Remote tilt t (about +-100 per g) is saturated to +-100 once the remote is
- *             rolled past vertical, then steer = handling * (0.5 t + t |t| / 150). The same
- *             curve is applied to the 3DS roll and scaled so 1 g still reads as 90, the iOS
- *             full lock; the per-car handling factor stays the iOS game's own. */
-enum { TILT_IOS = 0, TILT_WII = 1 };
-static int s_tilt_mode = TILT_WII;
-
-static float wii_tilt_curve(float t) {
-    float a = t < 0 ? -t : t;
-    return 0.5f * t + t * a / 150.0f;
-}
-
-static void feed_accel(void) {
+/* Steering. accelerometer:didAccelerate: stored (int)(g * 90) per axis; the race tick
+ * (fn_00005ac4) steers from accel[1] minus half the value latched at the race start
+ * (0x3f828): steer = (|tilt| - 2) * 1.2, then the car gets (|steer| - 1) / 30 of full lock.
+ * The port works the other way round: controls.c gives the steering it wants, -1..1 (from the
+ * Circle Pad, the D-pad or the tilt of the console), and accel[1] is set to the value that
+ * produces exactly that, with the calibration held at 0. The per-car handling and the
+ * blending with the game's auto-steer stay the game's own. accel[2] tilts the horizon by its
+ * cosine: 0 keeps it level. accel[0] keeps the console's pitch, as the iPhone's did. */
+static void feed_steering(bool menu) {
     float g[3];
     input_accel_g(g);
-    float roll = g[0];
-    if (s_tilt_mode == TILT_WII) {
-        float t = roll * 100.0f;
-        if (g[1] >= 0.0f) t = roll < 0 ? -100.0f : 100.0f; /* rolled past vertical */
-        if (t > 100.0f) t = 100.0f;
-        if (t < -100.0f) t = -100.0f;
-        roll = wii_tilt_curve(t) / wii_tilt_curve(100.0f);
-    }
-    float zs = G_U8(0x3ebb2) ? 1.0f : -1.0f;
+    float m = controls_steer();
+    if (menu) m = 0.0f;
+    float a = fabsf(m);
+    float v = a > 0.0f ? (30.0f * a + 1.01f) / 1.2f + 2.0f : 0.0f;
     G_F32(0x42754) = (float)(int)(-g[1] * 90.0f);
-    G_F32(0x42758) = (float)(int)(roll * 90.0f);
-    G_F32(0x4275c) = (float)(int)(zs * g[2] * 90.0f);
+    G_F32(0x42758) = m < 0.0f ? -v : v;
+    G_F32(0x4275c) = 0.0f;
+    G_F32(0x3f828) = 0.0f;
 }
 
 /* ---------------------------------------------------------------- app */
@@ -220,6 +232,7 @@ void app_init(void) {
      * shows the 3D Pixel Racing logo (tools/banner/make_banner.py renders it from the Wii
      * banner) instead of black. */
     gfxGL_SetBottomIdle("romfs:/bottom_logo.t3x", 320, 240);
+    controls_init();
     sys_log("app_init done");
 }
 
@@ -239,9 +252,13 @@ static void log_state(void) {
  * one-time init fn_00004254(1); after that every call is one 60 Hz game tick. */
 void app_tick(bool render) {
     input_update();
-    feed_buttons();
-    feed_touches();
-    feed_accel();
+    bool was_open = controls_menu_open();
+    bool menu = controls_menu_update();
+    /* opening the menu mid-race pauses the race, so the cars don't drive on behind it */
+    bool pause = menu && !was_open && racing();
+    feed_buttons(menu, pause);
+    feed_touches(menu);
+    feed_steering(menu);
     if (G_U8(0x3e91c)) {
         fn_00004254(1);
         G_U8(0x3e91c) = 0;
@@ -251,6 +268,7 @@ void app_tick(bool render) {
     G_U8(0x3f814) = 0;
     G_U8(0x3e918) = render;
     fn_00005ac4(render ? 1 : 0);
+    if (render) controls_menu_draw();
     input_end_tick();
     log_state();
 }

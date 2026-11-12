@@ -38,8 +38,10 @@ previous run in `PixelRacing_debug_prev.txt`) is on by default;
 `DEBUG=0` builds it out. `make_banner.py` also renders the bottom-screen logo
 that `build_romfs.py` picks up, so run it first.
 
-Controls: A gas, B brake, D-pad / Circle Pad steer, R or X the race button at index 7 (its role is not confirmed yet),
-START or SELECT pause.
+Controls: in a race the Circle Pad and the D-pad steer, A gas, B brake, R nitro, START pause; in
+the menus A/B are OK/back. SELECT opens the port's controls menu on the bottom screen (Circle Pad
+or tilt steering, stick sensitivity and dead zone, tilt range, which buttons are gas, brake and
+nitro), saved to `sdmc:/3ds/PixelRacing3D/controls.cfg` (`source/game/controls.c`).
 
 ## Tools
 | Script | What it does |

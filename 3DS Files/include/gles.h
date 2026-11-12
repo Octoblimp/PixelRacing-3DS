@@ -202,6 +202,17 @@ void gfxGL_SetStereo(float iod);
 /* Image shown on the bottom screen on frames that draw nothing there: a .t3x whose w x h
  * image sits in the top-left corner of the (POT) texture. */
 void gfxGL_SetBottomIdle(const char *t3x_path, int w, int h);
+/* Draws the idle logo now (it is otherwise only drawn on frames with nothing on the bottom
+ * screen), so an overlay can go on top of it. */
+void gfxGL_DrawBottomIdle(void);
+
+/* Overlays: the port's own 2D screens drawn through GL in the middle of the game's frame.
+ * Begin saves every piece of GL state the game can set and sets up 2D in pixels (origin top
+ * left, alpha blending, texturing on, vertex array on, other arrays off); End restores it. */
+void gfxGL_OverlayBegin(GfxScreen screen);
+void gfxGL_OverlayEnd(void);
+/* An untextured rectangle, between OverlayBegin and OverlayEnd. */
+void gfxGL_OverlayRect(float x, float y, float w, float h, float r, float g, float b, float a);
 /* Load a tex3ds .t3x into the bound texture; returns false on error.
  * w/h receive the texture (power-of-two) size. */
 bool glTexImageT3X(const char *path, int *w, int *h);
