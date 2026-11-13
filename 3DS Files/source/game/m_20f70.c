@@ -91,7 +91,13 @@ static void m20_overlay(void)
         fn_00004f24();
         fn_00005068(1);
         fn_00004fb4(0xff, 0xff, 0xff, 0xff);
+        /* 3DS: the page goes on the bottom screen, filling it, so its Back / Next / Exit
+         * answer touches there as well as B / A / START; the top shows the game's logo */
+        hud_bottom_screen();
+        fn_00004f24();
         fn_00005354(0xa9, 0.0f, 0.0f, (float)G_S32(0x40368), (float)G_S32(0x40374), 0.5f, 0);
+        hud_bottom_end();
+        gfxGL_DrawTopIdle();
         fn_00023bd4();
         goto done;
     }

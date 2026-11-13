@@ -263,7 +263,16 @@ static void feed_buttons(void) {
     bind_key(4, BTN_UP, KEY_DUP | (pad_ud & KEY_CPAD_UP));
     bind_key(5, BTN_DOWN, KEY_DDOWN | (pad_ud & KEY_CPAD_DOWN));
     bind_key(6, BTN_NITRO, race ? controls_key(c->nitro) : KEY_R | KEY_X);
-    bind_key(7, BTN_PAUSE, KEY_START);
+    /* START presses a different button 11 on each screen (help Exit, the title's help, pause),
+     * all at the same place, so a press that changes the screen would go on pressing the new
+     * one: closing the help would reopen it at once. START counts again once it is let go. */
+    static int s_start_state = -1;
+    int state = G_S32(0x3f848);
+    if (!(input_held() & KEY_START))
+        s_start_state = -1;
+    else if (s_start_state < 0)
+        s_start_state = state;
+    bind_key(7, BTN_PAUSE, s_start_state == state ? KEY_START : 0);
 }
 
 /* Steering. accelerometer:didAccelerate: stored (int)(g * 90) per axis; the race tick

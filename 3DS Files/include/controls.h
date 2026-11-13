@@ -49,6 +49,10 @@ void controls_commit(void);
  * the game has set its 2D modelview. A frame that draws them gets no idle logo. */
 void hud_bottom_begin(float gx, float gy, float px, float py, float scale);
 void hud_bottom_end(void);
+/* The whole bottom screen, for a full-screen picture (the help pages): the caller loads its
+ * projection (the game's 2D one spans the virtual screen, so the picture fills it). End with
+ * hud_bottom_end. A frame that draws it gets no idle logo. */
+void hud_bottom_screen(void);
 /* The bottom screen after the game's frame: the logo unless the race gauges are there, and
  * with `meter` a live steering meter (the Controls page). */
 void controls_bottom_draw(bool meter);

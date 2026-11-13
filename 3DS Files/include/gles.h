@@ -213,6 +213,9 @@ void gfxGL_SetBottomIdle(const char *t3x_path, int w, int h);
 /* Draws the idle logo now (it is otherwise only drawn on frames with nothing on the bottom
  * screen), so an overlay can go on top of it. */
 void gfxGL_DrawBottomIdle(void);
+/* The same logo centred on the top screen (black at the sides), e.g. while the help pages
+ * take the bottom screen. */
+void gfxGL_DrawTopIdle(void);
 
 /* Overlays: the port's own 2D screens drawn through GL in the middle of the game's frame.
  * Begin saves every piece of GL state the game can set and sets up 2D in pixels (origin top

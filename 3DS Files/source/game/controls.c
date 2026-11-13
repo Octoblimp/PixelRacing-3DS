@@ -330,6 +330,11 @@ void hud_bottom_begin(float gx, float gy, float px, float py, float scale) {
     s_hud_bottom = true;
 }
 
+void hud_bottom_screen(void) {
+    gfxGL_ScreenPush(GFX_SCREEN_BOTTOM);
+    s_hud_bottom = true;
+}
+
 void hud_bottom_end(void) {
     gfxGL_ScreenPop();
 }

@@ -215,8 +215,12 @@ static void tex_to_vram(C3D_Tex *tex) {
     *tex = v; /* the main-memory copy now belongs to the job */
 }
 
-/* Main thread: deletes a texture; a move into it that hasn't been issued yet is dropped. */
+/* Main thread: deletes a texture; a move into it that hasn't been issued yet is dropped.
+ * First the render thread finishes the frame it is building: that frame may draw this
+ * texture, and with the texture gone (or being reloaded, like the help pages each turn) it
+ * drew untextured: a white page that stayed up while the next picture loaded. */
 static void tex_delete(C3D_Tex *tex) {
+    gfxGL_WaitIdle();
     if (is_vram(tex->data)) {
         LightLock_Lock(&s_vlock);
         for (int i = 0; i < MAX_VJOBS; i++)
@@ -851,10 +855,12 @@ void gfxGL_OverlayRect(float x, float y, float w, float h, float r, float g, flo
     s_ta.enabled = ta;
 }
 
-static void draw_bottom_idle(void) {
+static void draw_idle(GfxScreen screen) {
     float tc[8] = {0, 0, s_idle_u, 0, 0, s_idle_v, s_idle_u, s_idle_v}; /* y down: t = 0 on top */
-    static const float pos[8] = {0, 0, 320, 0, 0, 240, 320, 240};
-    gfxGL_OverlayBegin(GFX_SCREEN_BOTTOM);
+    static const float pos_bottom[8] = {0, 0, 320, 0, 0, 240, 320, 240};
+    static const float pos_top[8] = {40, 0, 360, 0, 40, 240, 360, 240}; /* centred on 400 */
+    const float *pos = screen == GFX_SCREEN_TOP ? pos_top : pos_bottom;
+    gfxGL_OverlayBegin(screen);
     s_blend = false;
     glBindTexture(GL_TEXTURE_2D, s_idle_tex);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -865,7 +871,11 @@ static void draw_bottom_idle(void) {
 }
 
 void gfxGL_DrawBottomIdle(void) {
-    if (s_idle_tex) draw_bottom_idle();
+    if (s_idle_tex) draw_idle(GFX_SCREEN_BOTTOM);
+}
+
+void gfxGL_DrawTopIdle(void) {
+    if (s_idle_tex) draw_idle(GFX_SCREEN_TOP);
 }
 
 /* Debug log: one line per packet, so a GPU hang on hardware (which Azahar never shows) can be
@@ -1080,7 +1090,7 @@ void gfxGL_EndFrame(void) {
     if (s_idle_tex) {
         bool bottom = false;
         for (int i = 0; i < s_npk && !bottom; i++) bottom = s_pk[i].screen == GFX_SCREEN_BOTTOM;
-        if (!bottom) draw_bottom_idle();
+        if (!bottom) draw_idle(GFX_SCREEN_BOTTOM);
     }
     s_frame++;
     if (s_frame <= 3) dump_frame("frame", s_frame, s_pk, s_npk);

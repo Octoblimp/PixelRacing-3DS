@@ -129,6 +129,11 @@ void fn_0000a370(int page)
     G_S32(0x3f844) = page;
     snprintf(buf, sizeof(buf), "%s_%02d%s", "page", page, page == 6 ? "b.png" : ".png");
     fn_0000ff60(0xa9, buf, 0);
+    /* 3DS: the page's own "leave" flag (tick_screen) is the one the menus set when they finish
+     * their fade; opened from the main menu while it was still set, the page closed on its
+     * first tick. Its exit clears it, so opening it starts clear too. */
+    if (G_S32(0x3f848) != 9)
+        G_U8(0x3fee4) = 0;
     fn_0000a484(9);
     G_U8(0x47250) = 1; /* slot 0x3f13c */
     fn_000209e8();
