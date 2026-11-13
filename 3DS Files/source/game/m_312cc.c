@@ -609,6 +609,67 @@ steer:
     }
 }
 
+#ifdef DEBUG_LOG
+/* Debug: log a car that stands still for 3 s of a running race, and when it moves again, with
+ * what the race logic knows about it (looking for computer cars that stop driving). */
+int g_fuel_test;
+static void m312cc_watch(int car, int pad, uint8_t *c, int tile)
+{
+    static int s_since[16], s_logged[16], s_fuel_clk;
+    int clk = (int)M312_CLOCK;
+    if (car < 0 || car >= 16)
+        return;
+    if (g_fuel_test && car == 0 && (G_U8(0x3f8f8) & 1) && clk - s_fuel_clk >= 1000) {
+        s_fuel_clk = clk;
+        sys_log("fuel test: t %d fuel %.4f rpm %.1f rpm2 %.1f speed %.1f gear %d lap %d pits %d",
+                clk, AT_F32(c, 0x20), AT_F32(c, 0x238), AT_F32(c, 0x23c), AT_F32(c, 0x254),
+                AT_S32(c, 0x28), AT_S32(c, 0x8c), G_S32(0x3f8e0));
+    }
+    if (clk < s_fuel_clk)
+        s_fuel_clk = 0;
+    if (!(G_U8(0x3f8f8) & 1) || clk < 1000) {
+        s_since[car] = clk;
+        s_logged[car] = 0;
+        return;
+    }
+    if (AT_F32(c, 0x254) > 1.0f) {
+        if (s_logged[car])
+            sys_log("ai watch: car %d moves again after %d ms", car, clk - s_since[car]);
+        s_since[car] = clk;
+        s_logged[car] = 0;
+        return;
+    }
+    if (s_logged[car] || clk - s_since[car] < 3000)
+        return;
+    s_logged[car] = 1;
+    {
+        const uint8_t *ctl = M312_CTL(car);
+        float wear = AT_F32(c, 0x3f0) + AT_F32(c, 0x44c) + AT_F32(c, 0x4a8) + AT_F32(c, 0x504);
+        sys_log("ai watch: car %d STOPPED 3 s: pad %d state %d mode %d (A%d B%d C%d D%d E%d) "
+                "track %d wx %d ncars %d humans %d | lap %d cp %d/%d row %d col %d tile %d | "
+                "ctl brake %d gas %d steer %.0f spin %d | line %d pit %d/%d chaser %d crim %d "
+                "target %d done %d | 0x20 %.2f wear %.2f off %d e0 %d 34 %d pits %d",
+                car, pad, G_S32(0x3f848), M312_MODE, M312_MODE_A, M312_MODE_B, M312_MODE_C,
+                M312_MODE_D, M312_MODE_E, G_S32(0x3f8b0), G_S32(0x3f8b8), M312_NCARS,
+                G_S32(0x3e9ac), AT_S32(c, 0x8c), AT_S32(c, 0x84), M312_NPTS, AT_S32(c, 0x44),
+                AT_S32(c, 0x48), tile, ctl[0], ctl[1], AT_F32(ctl, 0xc), ctl[0x10],
+                AT_S32(c, 0x1c), AT_S32(c, 0x74), AT_S32(c, 0x78), AT_S32(c, 0x108),
+                AT_S32(c, 0x10c), AT_S32(c, 0x110), AT_S32(c, 0xf4), AT_F32(c, 0x20), wear,
+                AT_S32(c, 0xd8), AT_S32(c, 0xe0), AT_S32(c, 0x34), G_S32(0x3f8e0));
+        sys_log("ai watch: car %d phys: pos %.0f %.0f %.0f hd %.0f mv %.0f yaw %.2f | gear %d auto %d "
+                "rpm %.1f rpm2 %.1f fwd %.2f side %.2f | pitst %d 0x38 %d dmg %d brk %.2f 0x40 %.2f "
+                "nitro %d slip %.2f e8 %d ground %d %d %d %d 0x7c %.1f",
+                car, AT_F32(c, 0x2b0), AT_F32(c, 0x2b4), AT_F32(c, 0x2b8), AT_F32(c, 0x244),
+                AT_F32(c, 0x248), AT_F32(c, 0x24c), AT_S32(c, 0x28), AT_S32(c, 0x2c),
+                AT_F32(c, 0x238), AT_F32(c, 0x23c), AT_F32(c, 0x264), AT_F32(c, 0x268),
+                AT_S32(c, 0x70), AT_S32(c, 0x38), AT_S32(c, 0x114), AT_F32(c, 0x1e0),
+                AT_F32(c, 0x40), AT_S32(c, 0x5c), AT_F32(c, 0x58), AT_S32(c, 0xe8),
+                AT_S32(c, 0x3e4), AT_S32(c, 0x440), AT_S32(c, 0x49c), AT_S32(c, 0x4f8),
+                AT_F32(c, 0x7c));
+    }
+}
+#endif
+
 /* 0x000312cc -- per-car race update: checkpoints, laps, split times, respawn, slipstream,
  * then the driving input (pad >= 0: human pad, pad < 0: AI, pad == -2: idle) (guess) */
 void fn_000312cc(int car, int pad)
@@ -800,11 +861,14 @@ void fn_000312cc(int car, int pad)
                 if (o >= 0) {
                     int line = G_S32(0x3e9b0) == 2 ? 0x14c : 0x16c;
                     m312cc_gap((char *)c + line, c, o, 0xc8);
-                    /* colour of that line (0x1d0 / 0x1d4) */
-                    AT_U8(c, line + 0x84) = 0xff;
-                    AT_U8(c, line + 0x85) = 0;
-                    AT_U8(c, line + 0x86) = 0;
-                    AT_U8(c, line + 0x87) = 0xff;
+                    /* colour of that line: 0x1d0 for the 0x14c line, 0x1d4 for the 0x16c one.
+                     * (line + 0x84 put the second at 0x1f0, the car's first-gear ratio: the
+                     * car could then never pull away from a stop.) */
+                    int col = line == 0x14c ? 0x1d0 : 0x1d4;
+                    AT_U8(c, col) = 0xff;
+                    AT_U8(c, col + 1) = 0;
+                    AT_U8(c, col + 2) = 0;
+                    AT_U8(c, col + 3) = 0xff;
                 }
             }
         }
@@ -972,6 +1036,9 @@ slipstream:
         }
     }
 
+#ifdef DEBUG_LOG
+    m312cc_watch(car, pad, c, tile);
+#endif
     if (pad == -2) {
         /* no driver: wheels straight, nothing pressed */
         uint8_t *ctl = M312_CTL(car);

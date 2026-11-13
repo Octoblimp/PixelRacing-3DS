@@ -6,7 +6,9 @@ Usage:  python -I tools/build_romfs.py [--raw build/ios_raw] [--out "3DS Files/r
 Run tools/extract_ios.py first. Output layout (flat, like the iOS bundle; the port's fs layer
 drops the Wii-style directories the game code asks for, as the iOS build did):
   *.t3x          textures (tex3ds; rgb8 if fully opaque, else rgba8), padded to power-of-two;
-                 buttons.png shows A/B for the Wii Remote's 2/1 (tools/relabel_buttons.py)
+                 buttons.png shows A/B for the Wii Remote's 2/1 (tools/relabel_buttons.py);
+                 the help pages page_*.png come from build/help (tools/make_help_pages.py: the
+                 3DS's controls and buttons) when it has them
   textures.txt   name  width height pot_width pot_height format   (one line per texture)
   *.bin          models ("SMD Reference bin File", see docs/formats/models.md), with hidden
                  coplanar overlaps cut out by tools/smd_dedupe.py (a car's access part and
@@ -91,6 +93,12 @@ def main():
     sys.argv = [sys.argv[0], "--out", props]
     make_menu_props.main()
     a.extra += [os.path.join(props, n) for n in sorted(os.listdir(props))]
+    help_dir = os.path.join(root, "build", "help")
+    if os.path.isdir(help_dir):
+        a.extra += [os.path.join(help_dir, n) for n in sorted(os.listdir(help_dir))
+                    if n.startswith("page_") and n.endswith(".png")]
+    else:
+        print("note: %s missing (run tools/make_help_pages.py): iPhone help pages" % help_dir)
     with tempfile.TemporaryDirectory() as tmp:
         extra = {os.path.basename(p): p for p in a.extra if os.path.exists(p)}
         for p in a.extra:

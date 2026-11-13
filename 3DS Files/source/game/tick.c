@@ -59,6 +59,22 @@ static void tick_reset_cars(void)
         AT_F32(car, 0x504) = 1.0f;
         AT_F32(car, 0x20) = 1.0f;
     }
+#ifdef DEBUG_LOG
+    {   /* Debug: sdmc:/3ds/PixelRacing_fuel "f" starts car 0 with fuel f (fuel test). */
+        extern int g_fuel_test;
+        FILE *f = fopen("sdmc:/3ds/PixelRacing_fuel", "rb");
+        float v;
+        g_fuel_test = 0;
+        if (f) {
+            if (fscanf(f, "%f", &v) == 1 && v >= 0.0f && v <= 1.0f) {
+                AT_F32(G(0x48ae0), 0x20) = v;
+                g_fuel_test = 1;
+                sys_log("fuel test: car 0 starts with %.3f", v);
+            }
+            fclose(f);
+        }
+    }
+#endif
 }
 
 /* State 0: one-time boot. */

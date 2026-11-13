@@ -516,6 +516,23 @@ void fn_0000b054(int track, int weather, int dir, int reset)
     int size, pos, i;
     int a = 0, b = 0; /* sscanf targets: object kind, scale */
 
+#ifdef DEBUG_LOG
+    {   /* Debug: sdmc:/3ds/PixelRacing_track "track weather" forces every race onto them. */
+        FILE *f = fopen("sdmc:/3ds/PixelRacing_track", "rb");
+        if (f) {
+            int t = -1, w = -1;
+            if (fscanf(f, "%d %d", &t, &w) >= 1 && t >= 0 && t < 10) {
+                track = t;
+                if (w >= 0 && w < 5)
+                    weather = w;
+            }
+            fclose(f);
+        }
+    }
+    sys_log("track load: track %d (map_%02d) weather %d dir %d state %d mode %d", track,
+            ((int *)G(0x3eafc))[track], weather, dir, G_S32(0x3f848), G_S32(0x3f9dc));
+#endif
+
     if (G_U8(0x3f88c) & 1) {
         /* Replay: keep the live grid order and car state, restore the saved start order. */
         int n = NCARS;
