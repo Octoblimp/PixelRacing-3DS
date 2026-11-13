@@ -17,6 +17,7 @@
  *   fn_00023808(s, x, y, sx, sy, r, g, b, a, flags)                    bitmap-font string */
 #include "ios.h"
 #include "controls.h"
+#include "net_game.h"
 
 #define CAR_SIZE 0x678
 #define CAR(i) ((uint8_t *)G(0x48ae0) + (i) * CAR_SIZE)
@@ -261,7 +262,7 @@ void fn_00028a58(int car, int vp)
         m28_credits();
         return;
     }
-    if (G_S32(0x3e9b0) <= vp) { /* viewport not in use by a player */
+    if (G_S32(0x3e9b0) <= vp && vp != ng_drawn_view()) { /* viewport not in use by a player */
         fn_0002b654(car, vp, aspect);
         return;
     }
@@ -1042,7 +1043,8 @@ void fn_0002c2d8(int ci)
     float dist, hgt, ang, target, fade;
 
     memcpy(cam + CAM_PREV, cam + CAM_EYE, 12);
-    if (G_S32(0x3e9b0) == 1) {
+    /* 3DS: a multi-card race has the one-player chase camera (no split screen) */
+    if (G_S32(0x3e9b0) == 1 || ng_view_car() >= 0) {
         dist = 150.0f;
         hgt = 130.0f;
     } else {

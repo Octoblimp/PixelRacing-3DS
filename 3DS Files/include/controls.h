@@ -52,3 +52,6 @@ void hud_bottom_end(void);
 /* The bottom screen after the game's frame: the logo unless the race gauges are there, and
  * with `meter` a live steering meter (the Controls page). */
 void controls_bottom_draw(bool meter);
+/* Text on the bottom screen between gfxGL_OverlayBegin/End: centred at y, glyphs sz pixels
+ * square (the game's font, upper case). */
+void controls_text_center(float y, const char *s, float sz, float r, float g, float b);

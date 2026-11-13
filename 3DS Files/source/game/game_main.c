@@ -15,6 +15,8 @@
 #include "controls.h"
 #include "opt_menu.h"
 #include "input.h"
+#include "net_game.h"
+#include "net_uds.h"
 
 void snd_shutdown(void); /* m_35df8.c */
 
@@ -245,6 +247,11 @@ static void bind_key(int slot, int idx, uint32_t keys) {
 }
 
 static void feed_buttons(void) {
+    if (ng_panel_open()) {
+        /* the Wireless panel has the buttons (net_lobby.c) */
+        for (int i = 0; i < 8; i++) input_bind_button(i, 0, 0.0f, 0.0f);
+        return;
+    }
     const Controls *c = controls_get();
     bool race = racing();
     uint32_t pad_lr = race ? 0 : KEY_CPAD_LEFT | KEY_CPAD_RIGHT;
@@ -314,6 +321,7 @@ static void log_state(void) {
  * one-time init fn_00004254(1); after that every call is one 60 Hz game tick. */
 void app_tick(bool render) {
     input_update();
+    ng_lobby_tick();
     feed_buttons();
     feed_touches();
     feed_steering();
@@ -332,6 +340,7 @@ void app_tick(bool render) {
 }
 
 void app_exit(void) {
+    net_exit();
     snd_shutdown();
     input_exit();
 }

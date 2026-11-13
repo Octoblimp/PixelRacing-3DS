@@ -13,6 +13,7 @@
 #include "ios.h"
 #include "controls.h"
 #include "opt_menu.h"
+#include "net_game.h"
 
 /* Shared text buffer (slot 0x3f358 -> 0x47e90, 256 bytes). */
 #define M20_TXT ((char *)G(0x47e90))
@@ -62,7 +63,16 @@ static void m20_arrow(float cx, float cy, float w, float h, float v0, float dv, 
 /* 0x00020f70 -- in-game frame overlay: replay / split-screen HUD, the title-screen and garage
  * menus (modes 4/5/10/11/12/0x14/0x15/0x17/0x18/0x19), the pause screen (the frame is grabbed
  * into texture 0x99 on pause and drawn darkened under "Game paused") (guess: Hud_DrawOverlay). */
+static void m20_overlay(void);
 void fn_00020f70(void)
+{
+    /* 3DS: a multi-card race draws as a one-player race, this console's player alone */
+    ng_draw_begin();
+    m20_overlay();
+    ng_draw_end();
+}
+
+static void m20_overlay(void)
 {
     int paused, mode, cur, fa30;
 
@@ -92,9 +102,11 @@ void fn_00020f70(void)
         int t;
 
         if (n >= 1) {
+            /* 3DS: in a multi-card race, the view of this console's player */
+            int v0 = ng_drawn_view() >= 0 ? ng_drawn_view() : 0;
             fn_00004254(0);
-            fn_00023fb0(0);
-            fn_00028a58(0, 0);
+            fn_00023fb0(v0);
+            fn_00028a58(v0, v0);
             if (n >= 2) {
                 fn_00023fb0(1);
                 fn_00028a58(1, 1);

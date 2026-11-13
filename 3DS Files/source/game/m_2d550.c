@@ -15,6 +15,7 @@
  *   0x3fa60..0x3fa78 one-frame button flags written by fn_00030bf4 */
 #include "ios.h"
 #include "opt_menu.h"
+#include "net_game.h"
 
 #define CAR_SIZE 0x678
 #define CAR(i) ((uint8_t *)G(0x48ae0) + (i) * CAR_SIZE)
@@ -48,7 +49,7 @@
 #define INP_NITRO_L 0x8 /* u8: nitro latch */
 #define INP_STEER 0xc   /* float */
 #define INP_REV 0x10    /* u8: player reverse request */
-#define UI(i) ((uint8_t *)G(0x5c160) + (i) * 0x24)
+#define UI(i) ng_pad(i) /* 3DS: was 0x5c160 + i*0x24, see net_game.h */
 
 /* Particle ring. */
 #define PART_MAX 34

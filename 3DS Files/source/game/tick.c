@@ -13,6 +13,7 @@
  * they hand over to another state; state 9 calls it itself when leaving. */
 #include "ios.h"
 #include "controls.h"
+#include "net_game.h"
 
 /* Race recording (fn_00009dc0). Original: 200000 frames per player, snapshot stride 0x277830
  * (1562 * 0x678) per car, 16 cars. 3DS: 36864 frames (10.24 min at 60 ticks/s, a multiple of
@@ -445,7 +446,8 @@ static bool tick_menus(void)
         }
         fn_0002bf2c();
         /* leaving the menus: fade the music out, then start the race */
-        if (G_S32(0x3fa24) == 0x1e && (G_U8(0x3f898) & 1))
+        /* 3DS: a multi-card race starts once everyone has started (net_lobby.c) */
+        if (G_S32(0x3fa24) == 0x1e && ng_menu_start(G_U8(0x3f898) & 1))
             G_U8(0x3fed8) = 1;
         else
             G_U8(0x3fed8) = G_S32(0x3f874) != 0;
@@ -1309,7 +1311,7 @@ static void tick_race_pause(void)
     int e9cc = G_S32(0x3e9cc);
     uint8_t demo = G_U8(0x3f98c);
     for (int p = 0; p < np; p++) {
-        const uint8_t *in = (const uint8_t *)G(0x5c160) + 0xa9 + p * 0x24;
+        const uint8_t *in = ng_pad(p) + 0xa9; /* 3DS: was 0x5c160 + 0xa9 + p*0x24 */
         if (in[0] != 0 && !(flag & 1)) {
             /* quit the race */
             G_U8(0x3f8d4) = 1;
@@ -1374,12 +1376,17 @@ static bool tick_race(void)
 {
     int target = (G_S32(0x3e9e0) == 0 && !(G_U8(0x3f928) & 1)) ? 0 : 13000;
     fn_000302d0(TICK_MUSIC(), target);
-    fn_00009dc0(0);
+    /* 3DS: in a multi-card race every player's input comes from the network, and the race
+     * steps only once all of it is here for this tick (net_game.c) */
+    bool step = ng_race_input();
     int paused = fn_00004540() & 0xff;
-    if (G_U8(0x3f9e0) & 1)
+    if (step && (G_U8(0x3f9e0) & 1)) {
         tick_race_pause();
-    else if (!paused)
+        ng_race_stepped();
+    } else if (step && !paused) {
         tick_race_frame();
+        ng_race_stepped();
+    }
     fn_00020f08();
     if (!(G_U8(0x3fee4) & 1))
         return false;
@@ -1575,7 +1582,7 @@ void fn_00005ac4(int render)
 
 /* ---------------------------------------------------------------------------------------------
  * FUN_00009dc0: per-frame input of player `pl` (always 0 on iOS), with race recording/replay.
- * The input block of player p is at 0x5c160 + p*0x24:
+ * The input block of player p is at 0x5c160 + p*0x24 (3DS: ng_pad(p), see net_game.h):
  *   +0x7c..+0x8a  button bits of fn_0000a184 (current keys),
  *   +0x8c/+0x90/+0x94  analog input (-1.0f, steering -100..100, 0),
  *   +0xa0..+0xae  button bits used by the race (from the replay, or from fn_0002bf68).
@@ -1603,8 +1610,13 @@ void fn_00009dc0(int pl)
     if (fn_00004540() & 0xff)
         return;   /* paused */
 
-    uint8_t *in = (uint8_t *)G(0x5c160) + pl * 0x24;
+    uint8_t *in = ng_pad(pl);
     unsigned k = (unsigned)fn_0000a184(pl);
+    if (G_S32(0x3f984) != 1) {
+        unsigned b = (unsigned)fn_0002bf68(pl);
+        tick_fill_pad(pl, k, b, tick_steer());
+        return;
+    }
     in[0x82] = (k >> 15) & 1;
     in[0x7c] = (k >> 4) & 1;
     in[0x7d] = (k >> 12) & 1;
@@ -1617,7 +1629,7 @@ void fn_00009dc0(int pl)
     in[0x89] = k & 1;
     in[0x8a] = (k >> 1) & 1;
 
-    if (G_S32(0x3f984) == 1) {
+    {
         /* replay */
         int frame = G_S32(0x3f988);
         if (frame >= REC_FRAMES)
@@ -1643,10 +1655,12 @@ void fn_00009dc0(int pl)
             for (int i = 0; i < n; i++, src += REC_CAR_STRIDE)
                 memcpy(CAR(i), src, 0x678);
         }
-        return;
     }
+}
 
-    unsigned b = (unsigned)fn_0002bf68(pl);
+/* The steering wheel -100..100 from the tilt (G_F32(0x3f824)) or the touch slider. */
+int tick_steer(void)
+{
     int v = G_S32(0x3f848);   /* (sic) the original converts this when not in mode 5 */
     if (G_S32(0x3f848) == 5) {
         /* steering: tilt, or the on-screen slider (button 12 of the touch table 0x40388) */
@@ -1666,6 +1680,27 @@ void fn_00009dc0(int pl)
         if ((int16_t)v >= 101)
             v = 100;
     }
+    return (int16_t)v;
+}
+
+/* Writes player pl's input block: pressed keys k (fn_0000a184), held race buttons b
+ * (fn_0002bf68) and the steering v, and records them when a recording runs. 3DS: split out
+ * of fn_00009dc0 so a multi-card race (net_game.c) can fill every player's block from the
+ * network. */
+void tick_fill_pad(int pl, unsigned k, unsigned b, int v)
+{
+    uint8_t *in = ng_pad(pl);
+    in[0x82] = (k >> 15) & 1;
+    in[0x7c] = (k >> 4) & 1;
+    in[0x7d] = (k >> 12) & 1;
+    in[0x81] = (k >> 10) & 1;
+    in[0x80] = (k >> 11) & 1;
+    in[0x83] = (k >> 9) & 1;
+    in[0x84] = (k >> 8) & 1;
+    in[0x87] = (k >> 3) & 1;
+    in[0x88] = (k >> 2) & 1;
+    in[0x89] = k & 1;
+    in[0x8a] = (k >> 1) & 1;
     AT_F32(in, 0x8c) = -1.0f;
     AT_F32(in, 0x90) = (float)(int16_t)v;
     AT_S32(in, 0x94) = 0;
@@ -1678,7 +1713,7 @@ void fn_00009dc0(int pl)
         e[1] = AT_U32(in, 0x90);
         e[2] = AT_U32(in, 0x94);
         int frame = G_S32(0x3f988);
-        if ((frame & 0x7f) == 0) {
+        if ((frame & 0x7f) == 0 && pl == 0) {
             int n = G_S32(0x3e9c8);
             if (n > REC_MAX_CARS)
                 n = REC_MAX_CARS;

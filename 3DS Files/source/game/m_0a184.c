@@ -8,6 +8,7 @@
  *   0x45640 racing line: 255 x {float row, float col}, G_S32(0x3f948) points
  */
 #include "ios.h"
+#include "net_game.h"
 
 #define CAR_SIZE 0x678
 #define CAR(i) ((uint8_t *)G(0x48ae0) + (i) * CAR_SIZE)
@@ -240,6 +241,7 @@ void fn_0000a484(int state)
     int *cars_b = (int *)G(0x481c8); /* slot 0x3f36c: unlocked[11] */
 
     G_S32(0x3f848) = state;
+    ng_state(state); /* 3DS: multi-card races */
 
     if (state == 1) {
         int a;
@@ -405,7 +407,8 @@ void fn_0000a484(int state)
         int *wx_used = (int *)G(0x48274); /* slot 0x3f37c: weather already used[5] */
         int coin, dir, tr, wx, any, i;
 
-        srand(fn_00004208());
+        /* 3DS: a multi-card race draws the same track and weather on every console */
+        srand(ng_session() ? ng_seed_next() : fn_00004208());
         G_U8(0x3f920) = 1;
         coin = fn_00004400(2);
         for (i = 0; i < 10; i++)

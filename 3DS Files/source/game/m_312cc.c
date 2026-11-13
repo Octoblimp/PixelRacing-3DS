@@ -3,6 +3,7 @@
  * Module range [0x000312cc, 0x00035df8). */
 #include "ios.h"
 #include "opt_menu.h"
+#include "net_game.h"
 
 /* Car array: 0x678 bytes per car. */
 #define M312_CAR(i) ((uint8_t *)G(0x48ae0) + (i) * 0x678)
@@ -28,7 +29,7 @@
  * .., float steer @0xc, u8 skid @0x10}. */
 #define M312_CTL(i) ((uint8_t *)G(0x5c210) + (i) * 0x14)
 /* Per-pad input block: 0x24 bytes, base 0x5c160 (analog at 0x8c/0x90, buttons at 0xa0..0xa8). */
-#define M312_PAD(i) ((uint8_t *)G(0x5c160) + (i) * 0x24)
+#define M312_PAD(i) ng_pad(i) /* 3DS: was 0x5c160 + i*0x24, see net_game.h */
 
 static int m312cc_clamp(int v, int hi)
 {

@@ -14,6 +14,7 @@
 #include "controls.h"
 #include "input.h"
 #include "ios.h"
+#include "net_game.h"
 
 /* ---------------------------------------------------------------- settings */
 
@@ -305,6 +306,10 @@ static void text_center(float y, const char *s, float sz, float r, float g, floa
     text((320.0f - text_w(s, sz)) * 0.5f, y, s, sz, r, g, b);
 }
 
+void controls_text_center(float y, const char *s, float sz, float r, float g, float b) {
+    text_center(y, s, sz, r, g, b);
+}
+
 static bool s_hud_bottom; /* this frame drew the race gauges on the bottom screen */
 
 void hud_bottom_begin(float gx, float gy, float px, float py, float scale) {
@@ -333,6 +338,8 @@ void controls_bottom_draw(bool meter) {
     bool hud = s_hud_bottom;
     s_hud_bottom = false;
     if (!hud) gfxGL_DrawBottomIdle();
+    /* the Wireless panel or a status line (net_lobby.c) */
+    if (ng_bottom_draw()) G_S32(0x40608) = -1;
     if (!meter) return;
     /* the Controls page: a live steering meter, to try the settings before racing */
     gfxGL_OverlayBegin(GFX_SCREEN_BOTTOM);

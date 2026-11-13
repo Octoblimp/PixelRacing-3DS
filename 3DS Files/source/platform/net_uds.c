@@ -57,10 +57,17 @@ int net_scan(NetHostInfo *out, int max) {
     const size_t bufsize = 0x4000;
     void *buf = malloc(bufsize);
     if (!buf) return 0;
-    if (s_scan) free(s_scan);
-    s_scan = NULL;
-    s_scan_count = 0;
-    Result r = udsScanBeacons(buf, bufsize, &s_scan, &s_scan_count, NET_COMM_ID, 0, NULL, false);
+    Result r = 0;
+    /* Emulators collect the hosts' beacons from the moment UDS starts and hand back what came
+     * since: a scan right after udsInit finds nothing. Up to 4 tries, 250 ms apart. */
+    for (int tries = 0; tries < 4; tries++) {
+        if (s_scan) free(s_scan);
+        s_scan = NULL;
+        s_scan_count = 0;
+        if (tries) svcSleepThread(250000000LL);
+        r = udsScanBeacons(buf, bufsize, &s_scan, &s_scan_count, NET_COMM_ID, 0, NULL, false);
+        if (R_FAILED(r) || s_scan_count > 0) break;
+    }
     free(buf);
     if (R_FAILED(r)) {
         sys_log("udsScanBeacons %08lx", (unsigned long)r);
@@ -119,7 +126,7 @@ uint16_t net_my_node(void) {
 uint32_t net_nodes(void) {
     udsConnectionStatus st;
     if (!s_active || R_FAILED(udsGetConnectionStatus(&st))) return 0;
-    return st.node_bitmask;
+    return (uint32_t)st.node_bitmask << 1; /* UDS: bit 0 = node 1 */
 }
 
 const char *net_node_name(uint16_t node) {
