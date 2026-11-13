@@ -41,10 +41,14 @@ AccessControlInfo:
   # Only the CIA gets these; a .3dsx inherits its host's memory.
   SystemMode                    : 64MB
   SystemModeExt                 : 178MB
+  # Cores 0 and 1 (every model has both): gfx_c3d.c builds the GPU commands on a second core,
+  # core 2 on a New 3DS if the kernel allows it, else core 1 with APT_SetAppCpuTimeLimit(80).
+  # MaxCpu 0x9E is makerom's default (retail value); 0 left the system core to the system.
+  # If the second core is refused the game builds the commands inline, as before.
   IdealProcessor                : 0
-  AffinityMask                  : 1
+  AffinityMask                  : 3
   Priority                      : 16
-  MaxCpu                        : 0
+  MaxCpu                        : 0x9E
   HandleTableSize               : 0x200
   DisableDebug                  : false
   EnableForceDebug              : false

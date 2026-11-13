@@ -60,7 +60,7 @@ const char *fn_00035f88(int idx) {
 
 /* 0x000361a4 -- documents directory into the path buffer 0x3fef4 */
 void fn_000361a4(void) {
-    strcpy((char *)G(0x3fef4), ios_doc_dir());
+    strcpy((char *)G(0x3fef4), ios_save_dir());
 }
 
 /* 0x000361d4 -- SgWrite(name, data, size) */
@@ -81,6 +81,7 @@ int fn_000361d4(const char *name, const void *data, int size) {
         size -= (int)w;
     }
     fclose(f);
+    ios_save_commit(); /* port: the CIA's save data keeps nothing uncommitted */
     return 1;
 }
 

@@ -16,6 +16,7 @@
  *   fn_00004fb4(r, g, b, a)                                             glColor4f(x / 255)
  *   fn_00023808(s, x, y, sx, sy, r, g, b, a, flags)                    bitmap-font string */
 #include "ios.h"
+#include "controls.h"
 
 #define CAR_SIZE 0x678
 #define CAR(i) ((uint8_t *)G(0x48ae0) + (i) * CAR_SIZE)
@@ -245,6 +246,10 @@ static void m28_light_color(float v)
  * race position, clock, best lap, name tags (fn_0002b654), speedo + gear, optional second
  * gauge, mode-B bars, lives, lap counter and the fading result table. On the credits screen
  * (flag 0x3f928) it draws the credits instead. */
+/* port: in a single-player race the speedometer, the speed and the second gauge are drawn on
+ * the bottom screen (controls.h hud_bottom_begin); split-screen keeps them in each view. */
+#define M28_BOTTOM (G_S32(0x3e9b0) == 1)
+
 void fn_00028a58(int car, int vp)
 {
     int aspect = (int)(VP_W(vp) / VP_H(vp));
@@ -389,6 +394,8 @@ void fn_00028a58(int car, int vp)
         float gx = (float)(x0 - 0xaa), gy = (float)y0;
         int g, v;
 
+        if (M28_BOTTOM) /* the 200 x 200 dial, right half of the bottom screen */
+            hud_bottom_begin((float)(x0 - 70), (float)(y0 + 100), 250.0f, 74.0f, 0.7f);
         if (G_F32(0x3ea00) > 1.0f)
             fn_00004fb4(0xff, 100, 0, 0xff);
         else
@@ -434,7 +441,13 @@ void fn_00028a58(int car, int vp)
         if (G_S32(0x3f8cc) != 0)
             v = (int)((float)v * 1.35f);
         snprintf(TXT, 0x100, "%s.%03d", STR(0x47d58), v);
+        if (M28_BOTTOM) { /* top left, above the map */
+            hud_bottom_end();
+            hud_bottom_begin(64.0f, 206.0f, 10.0f, 8.0f, 0.8f);
+        }
         fn_00023808(TXT, 64.0f, aspect == 2 ? 136.0f : 206.0f, 1.0f, 1.0f, 0xff, 0, 0, 0xff, 4);
+        if (M28_BOTTOM)
+            hud_bottom_end();
     }
 
     /* ---- second gauge (0x2a39c): needle from car+0x20, four wheel lights ---- */
@@ -443,6 +456,8 @@ void fn_00028a58(int car, int vp)
         int x = G_S32(0x3f864);
         float by = (float)(y2 - 0x30), f;
 
+        if (M28_BOTTOM) /* below the dial */
+            hud_bottom_begin((float)(x - 55), (float)(y2 - 3), 246.0f, 178.0f, 0.7f);
         if (G_F32(0x3ea00) > 1.0f)
             fn_00004fb4(0xff, 100, 0, 0xff);
         else
@@ -479,6 +494,8 @@ void fn_00028a58(int car, int vp)
         m28_light_color(AT_F32(me, 0x504));
         fn_0000526c(0xaf, (float)(x - 0x72), (float)(y2 - 0xb), 12.0f, 22.0f, 0.95f, 0.053f,
                     0.092f, 0.106f, 0.338f, 0.0f, 0.0f, 0.0f, 4);
+        if (M28_BOTTOM)
+            hud_bottom_end();
 
         /* near the end of the racing line */
         if (AT_S32(me, 0x84) > G_S32(0x3f948) - 4) {

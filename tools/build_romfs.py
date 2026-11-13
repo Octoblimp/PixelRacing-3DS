@@ -11,6 +11,7 @@ drops the Wii-style directories the game code asks for, as the iOS build did):
   *.bin          models ("SMD Reference bin File", see docs/formats/models.md), with hidden
                  coplanar overlaps cut out by tools/smd_dedupe.py (a car's access part and
                  windows also against its body, which is drawn first with the same transform)
+  opt_*.bin/.t3x the port's own Options props (Controls / 3D pages), from tools/make_menu_props.py
   *.smd          only road_00.smd (its material is an .ifl texture list; kept for reference)
   *.map *.pbm *_objs.txt   tracks (docs/formats/tracks.md)
   *.wav          PCM16 mono, played by ndsp as-is
@@ -30,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pngio  # noqa: E402
 import relabel_buttons  # noqa: E402
 import smd_dedupe  # noqa: E402
+import make_menu_props  # noqa: E402
 
 IMG_LO, IMG_HI = 0x3B000, 0x8C000
 
@@ -72,9 +74,10 @@ def main():
                     help="more PNGs to convert (bottom_logo.png: tools/banner/make_banner.py)")
     ap.add_argument("--image-only", action="store_true", help="only (re)write ios_image.bin")
     dkp = os.environ.get("DEVKITPRO", "C:/devkitPro")
-    if os.name == "nt" and dkp.startswith("/opt/"):
-        dkp = "C:/devkitPro"  # the msys2 path devkitPro's installer sets
-    ap.add_argument("--tex3ds", default=os.path.join(dkp, "tools", "bin", "tex3ds"))
+    if os.name == "nt" and (dkp.startswith("/opt/") or not os.path.isdir(dkp)):
+        dkp = "C:/devkitPro"  # the msys2 path devkitPro's installer sets (Git Bash: .../Git/opt/..)
+    ap.add_argument("--tex3ds", default=os.path.join(dkp, "tools", "bin",
+                                                     "tex3ds.exe" if os.name == "nt" else "tex3ds"))
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     write_image(a.bin, a.out)
@@ -84,6 +87,10 @@ def main():
 
     manifest = []
     counts = {}
+    props = os.path.join(root, "build", "menu_props")
+    sys.argv = [sys.argv[0], "--out", props]
+    make_menu_props.main()
+    a.extra += [os.path.join(props, n) for n in sorted(os.listdir(props))]
     with tempfile.TemporaryDirectory() as tmp:
         extra = {os.path.basename(p): p for p in a.extra if os.path.exists(p)}
         for p in a.extra:

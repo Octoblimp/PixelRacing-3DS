@@ -2,6 +2,7 @@
  * AI driving input), menu helpers, race-start asset loading, points and engine sounds.
  * Module range [0x000312cc, 0x00035df8). */
 #include "ios.h"
+#include "opt_menu.h"
 
 /* Car array: 0x678 bytes per car. */
 #define M312_CAR(i) ((uint8_t *)G(0x48ae0) + (i) * 0x678)
@@ -1124,6 +1125,7 @@ void fn_00034b04(void)
     m312cc_model(0x77, "/models/others/siren.smd", "/models/others/siren.png", 2.54f, 0);
     m312cc_model(0x75, "/models/others/plate.smd", "/models/others/plate.png", 1.27f, 0);
     m312cc_model(0x8b, "/models/faces/eyes.smd", "/models/faces/eyes.png", 1.016f, 0);
+    optm_load(); /* the port's Options props: Controls and 3D pages (opt_menu.c) */
     fn_00038184(0x82);
     fn_00004dac(0x82);
 }

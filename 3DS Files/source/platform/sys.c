@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include "gles.h"
 #include "sys.h"
+#include "controls.h"
 
 static bool s_quit, s_n3ds;
 static u64 s_t0;
@@ -38,6 +39,7 @@ static bool is_cia(void) {
     }
     return s_cia;
 }
+bool sys_is_cia(void) { return is_cia(); }
 
 /* The debug log (on unless built with DEBUG=0): sdmc:/PixelRacing_debug.txt for the CIA, or
  * sdmc:/3ds/PixelRacing_debug.txt for the .3dsx. Each line is stamped with the
@@ -127,6 +129,10 @@ static void apt_hook(APT_HookType type, void *param) {
     (void)param;
     static const char *const k_names[] = {"suspend", "restore", "sleep", "wakeup", "exit"};
     if ((unsigned)type < sizeof(k_names) / sizeof(k_names[0])) sys_log("apt: %s", k_names[type]);
+    /* nothing may talk to the GPU while the HOME Menu has it, or after exit; this hook was
+     * registered after citro3d's, so it runs before it */
+    if (type == APTHOOK_ONSUSPEND || type == APTHOOK_ONSLEEP || type == APTHOOK_ONEXIT)
+        gfxGL_WaitIdle();
 }
 
 /* Game ticks to run this frame. The game is written for a fixed 60 Hz tick (iOS drawFrame), so
@@ -140,6 +146,7 @@ static void apt_hook(APT_HookType type, void *param) {
 #define VSYNC_SYSTICKS 4481136
 #define MAX_TICKS 4
 static int s_ticks_run;
+static float s_game_ms; /* CPU time of this frame's game ticks */
 static int ticks_due(void) {
     static u64 s_prev;
     static s64 s_owed;
@@ -162,6 +169,18 @@ static int ticks_due(void) {
 static void perf_frame(void) {
 #ifdef DEBUG_LOG
     static uint32_t s_start, s_last, s_frames, s_worst;
+    /* where a frame's time goes: game ticks (CPU), waiting for the GPU, building GPU commands
+     * (CPU), and the GPU's own drawing time; sums and maxima over the 10 s */
+    static float s_sum[5], s_max[5];
+    {
+        float t[5];
+        gfxGL_FrameTimes(&t[1], &t[2], &t[3], &t[4]);
+        t[0] = s_game_ms;
+        for (int i = 0; i < 5; i++) {
+            s_sum[i] += t[i];
+            if (t[i] > s_max[i]) s_max[i] = t[i];
+        }
+    }
     uint32_t now = sys_ms();
     if (!s_start) { s_start = s_last = now; s_ticks_run = 0; return; }
     uint32_t dt = now - s_last;
@@ -187,10 +206,42 @@ static void perf_frame(void) {
                 (unsigned long)(lin / 1024),
                 (unsigned long)((g_heap_info.linear - s_lin_min) / 1024),
                 (unsigned long)(mi.uordblks / 1024), (unsigned long)(s_heap_max / 1024));
+        if (s_frames) {
+            float k = 1.0f / s_frames;
+            sys_log("perf: per frame (avg/max ms): game %d/%d, gpu wait %d/%d, build %d/%d, "
+                    "gpu %d/%d, render thread wait %d/%d, %d draws",
+                    (int)(s_sum[0] * k + 0.5f), (int)(s_max[0] + 0.5f), (int)(s_sum[1] * k + 0.5f),
+                    (int)(s_max[1] + 0.5f), (int)(s_sum[2] * k + 0.5f), (int)(s_max[2] + 0.5f),
+                    (int)(s_sum[3] * k + 0.5f), (int)(s_max[3] + 0.5f), (int)(s_sum[4] * k + 0.5f),
+                    (int)(s_max[4] + 0.5f), gfxGL_LastDrawCount());
+        }
+        for (int i = 0; i < 5; i++) s_sum[i] = s_max[i] = 0;
         s_start = now;
         s_frames = s_worst = 0;
     }
 #endif
+}
+
+/* Stereo 3D from the 3D slider: eye separation up to STEREO_MAX in NDC units (0.015 = 3 pixels
+ * per eye for distant things), times the 3D page's depth. Off while steering by tilt (unless
+ * the 3D page says otherwise): turning the console moves the screen out of the narrow angle in
+ * which the 3D picture works. Pop-out sets the screen plane, HUD Depth floats the 2D draws. */
+#define STEREO_MAX 0.015f
+static void stereo_update(void) {
+    static int s_was = -1;
+    float slider = osGet3DSliderState();
+    const Controls *c = controls_get();
+    static const float k_plane[3] = {80.0f, 120.0f, 160.0f};
+    bool tilt = c->steer == STEER_TILT && !c->stereo_tilt;
+    float iod = tilt ? 0.0f : slider * STEREO_MAX * (float)c->stereo_depth / 100.0f;
+    gfxGL_SetStereoDepth(k_plane[c->stereo_pop], c->hud_depth ? 0.6f : 0.0f);
+    if (iod < 0.0005f) iod = 0.0f;
+    int on = iod > 0.0f ? 1 : 0;
+    if (on != s_was) {
+        if (s_was >= 0 || on) sys_log("3d: %s%s", on ? "on" : "off", tilt && slider > 0.0f ? " (tilt steering)" : "");
+        s_was = on;
+    }
+    gfxGL_SetStereo(iod);
 }
 
 int main(int argc, char **argv) {
@@ -227,6 +278,7 @@ int main(int argc, char **argv) {
         if (!aptMainLoop() || s_quit) break;
         sys_stage("game");
         gfxGL_BeginFrame();
+        u64 tg = svcGetSystemTick();
         int ticks = ticks_due();
         for (int i = 0; i < ticks; i++) {
             /* The game draws on every tick. Only the last tick of a frame is shown: drop what
@@ -234,8 +286,11 @@ int main(int argc, char **argv) {
              * (hair through faces where the game doesn't clear depth in between, and the GPU
              * doing the work twice). */
             if (i > 0) gfxGL_DiscardDraws();
+            gfxGL_SkipDraws(i < ticks - 1); /* and don't even record what won't be shown */
             app_tick(i == ticks - 1);
         }
+        s_game_ms = (float)(svcGetSystemTick() - tg) / CPU_TICKS_PER_MSEC;
+        stereo_update();
         sys_stage("render");
         gfxGL_EndFrame();
         perf_frame();

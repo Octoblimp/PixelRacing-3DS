@@ -13,7 +13,8 @@ param(
     [string]$Target = "3DS Files\PixelRacing-3DS.3dsx",
     [string]$Script = "wait:8,shot:boot",
     [string]$OutDir = "",
-    [string]$AzaharExe = "C:\Program Files\Azahar\azahar.exe"
+    [string]$AzaharExe = "C:\Program Files\Azahar\azahar.exe",
+    [switch]$OnlyIfAlone
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -77,7 +78,12 @@ public class PrCap {
 [void][PrCap]::SetProcessDPIAware()
 
 $vk = @{ UP = 38; DOWN = 40; LEFT = 37; RIGHT = 39 }
-Get-Process azahar -ErrorAction SilentlyContinue | Stop-Process -Force
+# Never touch other Azahar instances (another project may be running one): this script only
+# drives and closes the process it starts. Two instances share Azahar's user folder, so a run
+# that needs a changed setting (e.g. Old 3DS mode) must wait until no other instance is open.
+if ($OnlyIfAlone -and (Get-Process azahar -ErrorAction SilentlyContinue)) {
+    throw "another Azahar is running; not starting (-OnlyIfAlone)"
+}
 $proc = Start-Process -FilePath $AzaharExe -ArgumentList "`"$Target`"" -PassThru
 $hwnd = [IntPtr]::Zero
 for ($i = 0; $i -lt 60 -and $hwnd -eq [IntPtr]::Zero; $i++) {

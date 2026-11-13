@@ -11,6 +11,8 @@
  *   fn_00004fb4(r, g, b, a)                          -- glColor4f(x / 255)
  * Bitmap font (tex 0x97, 10x10 glyph grid): fn_00023808 below. */
 #include "ios.h"
+#include "controls.h"
+#include "opt_menu.h"
 
 /* Shared text buffer (slot 0x3f358 -> 0x47e90, 256 bytes). */
 #define M20_TXT ((char *)G(0x47e90))
@@ -110,9 +112,11 @@ void fn_00020f70(void)
         fn_00003f7c(0.0f, 0.0f, 1.0f, 1.0f);
         if (G_U8(0x3f928) & 1)
             goto menus_end;
-        if (n == 1)
+        if (n == 1) { /* port: the map goes to the left half of the bottom screen */
+            hud_bottom_begin(520.0f, 96.0f, 88.0f, 128.0f, 1.15f);
             fn_00028058(1, 520, 96, 7, -1);
-        else if (n == 2)
+            hud_bottom_end();
+        } else if (n == 2)
             fn_00028058(1, 420, 200, 5, -1);
         else
             fn_00028058(1, 320, 220, n > 1 ? 5 : 7, -1);
@@ -1668,8 +1672,11 @@ void fn_00023fb0(int v)
             q[5] = 0x7a;
             fn_000128a8(v);
         }
-        if (G_S32(0x3fa24) == 0xc) {
-            /* options menu */
+        if (G_S32(0x3fa24) == 0xc && optm_fill(q, (char *)G(0x47520), (char *)G(0x472a0))) {
+            /* the port's Controls / 3D page of the options (opt_menu.c) */
+            fn_000128a8(v);
+        } else if (G_S32(0x3fa24) == 0xc) {
+            /* options menu; the port adds Controls and 3D after the game's 7 rows */
             char *t = (char *)G(0x47520);
 
             G_S32(0x3ec00) = 7;
@@ -1728,6 +1735,7 @@ void fn_00023fb0(int v)
             q[4] = 0x88;
             q[5] = 0x7c;
             q[6] = 0x91;
+            G_S32(0x3ec00) = optm_options_rows(q, t);
             fn_000128a8(v);
         }
         if (G_S32(0x3fa24) == 0xb) {

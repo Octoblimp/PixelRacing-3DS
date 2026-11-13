@@ -67,6 +67,7 @@ typedef struct {
     u16 stride;
     bool interleaved_direct; /* buffer holds all enabled attribs with their own offsets */
     bool game_vb;            /* buf_addr points at the game's own vertex data (not the ring) */
+    bool batched;            /* small unlit draw, modelview applied on the CPU: see batch_draw */
     u32 attr_addr[3];        /* per-attribute addresses when not interleaved */
     u16 attr_stride[3];
     float fixed_nrm[3], fixed_tc[2];
@@ -115,11 +116,11 @@ static GLint s_vp[4] = {0, 0, 400, 240}, s_sc[4] = {0, 0, 400, 240};
 static GfxScreen s_screen = GFX_SCREEN_TOP;
 static float s_iod;
 
-static Packet *s_pk, *s_pkbuf[2];
+static Packet *s_pk, *s_pkbuf[3];
 static int s_npk, s_last_draws;
-static int s_prev_npk, s_frame;
+static int s_frame;
 static float s_cmd_peak;
-static u8 *s_ring[2];
+static u8 *s_ring[3];
 static u32 s_ring_off;
 static int s_ring_idx;
 
@@ -134,9 +135,24 @@ void *gfxGL_LinearAlloc(uint32_t size) { return linearMemAlign(size, 0x80); }
 void gfxGL_LinearFree(void *p) { if (p) linearFree(p); }
 void gfxGL_Flush(const void *p, uint32_t size) { GSPGPU_FlushDataCache(p, size); }
 int gfxGL_LastDrawCount(void) { return s_last_draws; }
+static float s_wait_ms, s_build_ms, s_sync_ms;
+void gfxGL_FrameTimes(float *wait_ms, float *build_ms, float *gpu_ms, float *sync_ms) {
+    *wait_ms = s_wait_ms;
+    *build_ms = s_build_ms;
+    *gpu_ms = C3D_GetDrawingTime();
+    *sync_ms = s_sync_ms;
+}
 
+/* The start is 16-byte aligned and the size is not rounded, so batch_draw can append to the
+ * last allocation with ring_append. */
 static void *ring_alloc(u32 size) {
-    size = (size + 15) & ~15u;
+    u32 off = (s_ring_off + 15) & ~15u;
+    if (off + size > RING_SIZE) return NULL;
+    s_ring_off = off + size;
+    return s_ring[s_ring_idx] + off;
+}
+
+static void *ring_append(u32 size) {
     if (s_ring_off + size > RING_SIZE) return NULL;
     void *p = s_ring[s_ring_idx] + s_ring_off;
     s_ring_off += size;
@@ -246,6 +262,8 @@ static u32 rgba8(const float *c) {
 /* ------------------------------------------------------------------ init / frame */
 
 static void fog_init(void);
+static void render_thread_start(void);
+static void render_thread_stop(void);
 
 void gfxGL_Init(void) {
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4);
@@ -272,21 +290,23 @@ void gfxGL_Init(void) {
     C3D_BindProgram(&s_prog);
     fog_init();
 
-    s_pkbuf[0] = malloc(sizeof(Packet) * MAX_PACKETS);
-    s_pkbuf[1] = malloc(sizeof(Packet) * MAX_PACKETS);
+    for (int i = 0; i < 3; i++) {
+        s_pkbuf[i] = malloc(sizeof(Packet) * MAX_PACKETS);
+        s_ring[i] = linearAlloc(RING_SIZE);
+    }
     s_pk = s_pkbuf[0];
-    s_ring[0] = linearAlloc(RING_SIZE);
-    s_ring[1] = linearAlloc(RING_SIZE);
     for (int i = 0; i < 3; i++) mtx_identity(s_m[i]);
+    render_thread_start();
 }
 
 void gfxGL_Exit(void) {
+    render_thread_stop();
     for (int i = 0; i < MAX_TEXTURES; i++)
         if (s_tex[i].has_data) C3D_TexDelete(&s_tex[i].tex);
-    linearFree(s_ring[0]);
-    linearFree(s_ring[1]);
-    free(s_pkbuf[0]);
-    free(s_pkbuf[1]);
+    for (int i = 0; i < 3; i++) {
+        linearFree(s_ring[i]);
+        free(s_pkbuf[i]);
+    }
     shaderProgramFree(&s_prog);
     DVLB_Free(s_dvlb);
     C3D_RenderTargetDelete(s_top_l);
@@ -296,11 +316,16 @@ void gfxGL_Exit(void) {
 }
 
 void gfxGL_SetStereo(float iod) { s_iod = iod; }
+static float s_plane = 120.0f, s_hud;
+void gfxGL_SetStereoDepth(float plane, float hud) {
+    s_plane = plane;
+    s_hud = hud;
+}
 
 void gfxGL_BeginFrame(void) {
-    s_pk = s_pkbuf[s_frame & 1];
+    s_ring_idx = (s_ring_idx + 1) % 3;
+    s_pk = s_pkbuf[s_ring_idx];
     s_npk = 0;
-    s_ring_idx ^= 1;
     s_ring_off = 0;
     s_screen = GFX_SCREEN_TOP;
 }
@@ -345,17 +370,26 @@ static void fog_init(void) {
     C3D_TexSetWrap(&s_fogtex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
 }
 
+static struct RcFog { int fog; u32 fog_color; } *rc_fog(void);
+static void unif_set(int reg, float x, float y, float z, float w);
+
 static void set_fog(const Packet *p) {
-    C3D_TexEnv *env = C3D_GetTexEnv(1);
-    C3D_TexEnvInit(env);
-    C3D_FogGasMode(GPU_NO_FOG, GPU_PLAIN_DENSITY, false);
+    struct RcFog *rc = rc_fog();
     if (!p->fog) {
-        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_fog, 1.0f, 0.0f, 0, 0);
+        unif_set(u_fog, 1.0f, 0.0f, 0, 0);
+        if (rc->fog != 0) {
+            C3D_TexEnvInit(C3D_GetTexEnv(1));
+            rc->fog = 0;
+        }
         return;
     }
     /* f = (end - d) / (end - start), d = -eye.z */
     float inv = 1.0f / (p->fog_end - p->fog_start);
-    C3D_FVUnifSet(GPU_VERTEX_SHADER, u_fog, p->fog_end * inv, inv, 0, 0);
+    unif_set(u_fog, p->fog_end * inv, inv, 0, 0);
+    if (rc->fog == 1 && rc->fog_color == p->fog_color) return;
+    rc->fog = 1, rc->fog_color = p->fog_color;
+    C3D_TexEnv *env = C3D_GetTexEnv(1);
+    C3D_TexEnvInit(env);
     C3D_TexBind(1, &s_fogtex);
     C3D_TexEnvSrc(env, C3D_RGB, GPU_PREVIOUS, GPU_CONSTANT, GPU_TEXTURE1);
     C3D_TexEnvFunc(env, C3D_RGB, GPU_INTERPOLATE);
@@ -376,11 +410,60 @@ static void fb_rect(int scr_w, const s16 *r, u32 *x, u32 *y, u32 *w, u32 *h) {
     *h = gw > 0 ? gw : 0;
 }
 
+/* replay() state cache. Every citro3d setter marks its state dirty and C3D_DrawArrays then
+ * re-emits all of it, so setting the whole state on each of ~300-500 draws made building the
+ * GPU commands the largest part of a frame. Only what differs from the previous draw is set.
+ * Reset at the start of each render target (C3D_FrameDrawOn sets the viewport). */
+static struct {
+    bool valid;
+    C3D_FVec unif[96]; /* last value written per vertex-shader float uniform register */
+    u8 unif_ok[96];
+    u32 vp[4], sc[5];
+    int depth_test, depth_func, depth_wr, wbuf, cull, blend, src, dst;
+    float wscale;
+    const void *tex0;
+    int env0; /* 1 textured, 2 colour only */
+} s_rc;
+
+static struct RcFog s_rc_fog;
+static struct RcFog *rc_fog(void) { return &s_rc_fog; }
+
+static void unif_set(int reg, float x, float y, float z, float w) {
+    if (reg < 0 || reg >= 96) return;
+    C3D_FVec *c = &s_rc.unif[reg];
+    if (s_rc.unif_ok[reg] && c->x == x && c->y == y && c->z == z && c->w == w) return;
+    c->x = x, c->y = y, c->z = z, c->w = w;
+    s_rc.unif_ok[reg] = 1;
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, reg, x, y, z, w);
+}
+
+static void rc_reset(void) {
+    memset(&s_rc, 0, sizeof s_rc);
+    s_rc.depth_test = s_rc.cull = s_rc.blend = -1;
+    s_rc_fog.fog = -1;
+    C3D_FogGasMode(GPU_NO_FOG, GPU_PLAIN_DENSITY, false);
+}
+
+static void unif_mtx(int reg, const C3D_Mtx *m) {
+    if (reg < 0 || reg + 4 > 96) return;
+    bool same = true;
+    for (int i = 0; i < 4 && same; i++)
+        same = s_rc.unif_ok[reg + i] && !memcmp(&s_rc.unif[reg + i], &m->r[i], sizeof(C3D_FVec));
+    if (same) return;
+    for (int i = 0; i < 4; i++) {
+        s_rc.unif[reg + i] = m->r[i];
+        s_rc.unif_ok[reg + i] = 1;
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, reg, m);
+}
+
+static float s_rplane = 120.0f, s_rhud; /* the frame being built: screen plane, HUD depth */
+
 static void replay(const Packet *p, int scr_w, float eye) {
     u32 x, y, w, h;
     fb_rect(scr_w, p->vp, &x, &y, &w, &h);
     if (!w || !h) return; /* a 0-size viewport is undefined on the PICA: skip the draw */
-    C3D_SetViewport(x, y, w, h);
+    u32 sc[5] = {GPU_SCISSOR_DISABLE, 0, 0, 0, 0};
     if (p->scissor) {
         u32 sx, sy, sw, sh;
         fb_rect(scr_w, p->sc, &sx, &sy, &sw, &sh);
@@ -388,53 +471,93 @@ static void replay(const Packet *p, int scr_w, float eye) {
         if (ex > 240) ex = 240;
         if (ey > (u32)scr_w) ey = scr_w;
         if (sx >= ex || sy >= ey) return; /* scissored away entirely */
-        C3D_SetScissor(GPU_SCISSOR_NORMAL, sx, sy, ex, ey);
-    } else {
-        C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+        sc[0] = GPU_SCISSOR_NORMAL, sc[1] = sx, sc[2] = sy, sc[3] = ex, sc[4] = ey;
+    }
+    u32 vp[4] = {x, y, w, h};
+    if (!s_rc.valid || memcmp(vp, s_rc.vp, sizeof vp)) {
+        C3D_SetViewport(x, y, w, h);
+        memcpy(s_rc.vp, vp, sizeof vp);
+    }
+    if (!s_rc.valid || memcmp(sc, s_rc.sc, sizeof sc)) {
+        C3D_SetScissor((GPU_SCISSORMODE)sc[0], sc[1], sc[2], sc[3], sc[4]);
+        memcpy(s_rc.sc, sc, sizeof sc);
     }
 
     C3D_Mtx proj = p->proj;
     if (eye != 0.0f && p->persp) {
-        /* stereo skew: x_ndc += eye * (1 - D / w), screen plane D = 2 units in front */
-        const float D = 2.0f;
-        for (int j = 0; j < 4; j++) proj.r[0].c[j] += eye * proj.r[3].c[j];
-        proj.r[0].w -= eye * D;
+        /* Stereo: each eye's picture is shifted sideways by x_ndc += eye * (1 - D / w), so
+         * things at distance D (the screen plane) don't move, farther ones go behind the screen
+         * and nearer ones come out of it. D = 120 (Pop-out: Normal; the 3D page sets it):
+         * the race camera has the player's car about 186 units away (logged in a race), so
+         * the car sits just behind the screen and the track beside the camera (down to ~30
+         * units) doesn't jump out too far. The top framebuffer is rotated (final_projection:
+         * y' = -x), so the screen's horizontal is the framebuffer's -y: in clip space
+         * y' -= eye * (w - D). */
+        const float D = s_rplane;
+        for (int j = 0; j < 4; j++) proj.r[1].c[j] -= eye * proj.r[3].c[j];
+        proj.r[1].w += eye * D;
+    } else if (eye != 0.0f && s_rhud != 0.0f) {
+        /* 2D (w = 1): the whole draw moves the way a near thing does, out of the screen */
+        proj.r[1].w += eye * s_rhud;
     }
-    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, u_proj, &proj);
-    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, u_mv, &p->mv);
-    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, u_tm, &p->tm);
-    C3D_FVUnifSet(GPU_VERTEX_SHADER, u_color, p->color.x, p->color.y, p->color.z, p->color.w);
-    C3D_FVUnifSet(GPU_VERTEX_SHADER, u_lpos, p->lpos.x, p->lpos.y, p->lpos.z, p->lpos.w);
-    C3D_FVUnifSet(GPU_VERTEX_SHADER, u_lamb, p->lamb.x, p->lamb.y, p->lamb.z, p->lamb.w);
-    C3D_FVUnifSet(GPU_VERTEX_SHADER, u_ldif, p->ldif.x, p->ldif.y, p->ldif.z, p->ldif.w);
-    C3D_FVUnifSet(GPU_VERTEX_SHADER, u_lflag, p->lflag.x, 0, 0, 0);
-    C3D_FVUnifSet(GPU_VERTEX_SHADER, u_tcflip, p->tcflip.x, p->tcflip.y, 0, 0);
+    unif_mtx(u_proj, &proj);
+    unif_mtx(u_mv, &p->mv);
+    unif_mtx(u_tm, &p->tm);
+    unif_set(u_color, p->color.x, p->color.y, p->color.z, p->color.w);
+    unif_set(u_lpos, p->lpos.x, p->lpos.y, p->lpos.z, p->lpos.w);
+    unif_set(u_lamb, p->lamb.x, p->lamb.y, p->lamb.z, p->lamb.w);
+    unif_set(u_ldif, p->ldif.x, p->ldif.y, p->ldif.z, p->ldif.w);
+    unif_set(u_lflag, p->lflag.x, 0, 0, 0);
+    unif_set(u_tcflip, p->tcflip.x, p->tcflip.y, 0, 0);
 
-    C3D_DepthTest(p->depth_test, p->depth_test ? p->depth_func : GPU_ALWAYS,
-                  p->kind == PK_CLEAR
-                      ? ((p->clear_mask & GL_COLOR_BUFFER_BIT ? GPU_WRITE_COLOR : 0) |
-                         (p->clear_mask & GL_DEPTH_BUFFER_BIT ? GPU_WRITE_DEPTH : 0))
-                      : (p->depth_write ? GPU_WRITE_ALL : GPU_WRITE_COLOR));
-    C3D_DepthMap(!p->wbuf, p->wbuf ? p->wscale : -1.0f, 0.0f);
-    C3D_CullFace(p->cull ? p->cull_mode : GPU_CULL_NONE);
-    if (p->blend)
-        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, p->src, p->dst, p->src, p->dst);
-    else
-        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
-    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    int dfunc = p->depth_test ? p->depth_func : GPU_ALWAYS;
+    int dwr = p->kind == PK_CLEAR
+                  ? ((p->clear_mask & GL_COLOR_BUFFER_BIT ? GPU_WRITE_COLOR : 0) |
+                     (p->clear_mask & GL_DEPTH_BUFFER_BIT ? GPU_WRITE_DEPTH : 0))
+                  : (p->depth_write ? GPU_WRITE_ALL : GPU_WRITE_COLOR);
+    if (s_rc.depth_test != p->depth_test || s_rc.depth_func != dfunc || s_rc.depth_wr != dwr) {
+        C3D_DepthTest(p->depth_test, (GPU_TESTFUNC)dfunc, (GPU_WRITEMASK)dwr);
+        s_rc.depth_test = p->depth_test, s_rc.depth_func = dfunc, s_rc.depth_wr = dwr;
+    }
+    float ws = p->wbuf ? p->wscale : -1.0f;
+    if (!s_rc.valid || s_rc.wbuf != p->wbuf || s_rc.wscale != ws) {
+        C3D_DepthMap(!p->wbuf, ws, 0.0f);
+        s_rc.wbuf = p->wbuf, s_rc.wscale = ws;
+    }
+    int cull = p->cull ? p->cull_mode : GPU_CULL_NONE;
+    if (s_rc.cull != cull) {
+        C3D_CullFace((GPU_CULLMODE)cull);
+        s_rc.cull = cull;
+    }
+    int bsrc = p->blend ? p->src : GPU_ONE, bdst = p->blend ? p->dst : GPU_ZERO;
+    if (s_rc.blend != 1 || s_rc.src != bsrc || s_rc.dst != bdst) {
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, (GPU_BLENDFACTOR)bsrc, (GPU_BLENDFACTOR)bdst,
+                       (GPU_BLENDFACTOR)bsrc, (GPU_BLENDFACTOR)bdst);
+        s_rc.blend = 1, s_rc.src = bsrc, s_rc.dst = bdst;
+    }
+    if (!s_rc.valid) C3D_AlphaTest(false, GPU_ALWAYS, 0);
     set_fog(p);
 
-    C3D_TexEnv *env = C3D_GetTexEnv(0);
-    C3D_TexEnvInit(env);
     const GLTex *t = p->tex < MAX_TEXTURES ? &s_tex[p->tex] : NULL;
-    if (p->texturing && t && t->has_data) {
+    bool textured = p->texturing && t && t->has_data;
+    if (textured && s_rc.tex0 != &t->tex) {
         C3D_TexBind(0, (C3D_Tex *)&t->tex);
-        C3D_TexEnvSrc(env, C3D_Both, GPU_TEXTURE0, GPU_PRIMARY_COLOR, 0);
-        C3D_TexEnvFunc(env, C3D_Both, GPU_MODULATE);
-    } else {
-        C3D_TexEnvSrc(env, C3D_Both, GPU_PRIMARY_COLOR, 0, 0);
-        C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+        s_rc.tex0 = &t->tex;
     }
+    int env0 = textured ? 1 : 2;
+    if (s_rc.env0 != env0) {
+        C3D_TexEnv *env = C3D_GetTexEnv(0);
+        C3D_TexEnvInit(env);
+        if (textured) {
+            C3D_TexEnvSrc(env, C3D_Both, GPU_TEXTURE0, GPU_PRIMARY_COLOR, 0);
+            C3D_TexEnvFunc(env, C3D_Both, GPU_MODULATE);
+        } else {
+            C3D_TexEnvSrc(env, C3D_Both, GPU_PRIMARY_COLOR, 0, 0);
+            C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+        }
+        s_rc.env0 = env0;
+    }
+    s_rc.valid = true;
 
     C3D_AttrInfo *ai = C3D_GetAttrInfo();
     AttrInfo_Init(ai);
@@ -557,6 +680,34 @@ void gfxGL_OverlayBegin(GfxScreen screen) {
     s_ta.enabled = false;
 }
 
+static struct {
+    GfxScreen screen;
+    GLint vp[4], sc[4];
+    bool scissor;
+    GLenum matmode;
+    float proj[16];
+} s_push;
+
+void gfxGL_ScreenPush(GfxScreen screen) {
+    s_push.screen = s_screen;
+    memcpy(s_push.vp, s_vp, sizeof s_vp);
+    memcpy(s_push.sc, s_sc, sizeof s_sc);
+    s_push.scissor = s_scissor;
+    s_push.matmode = s_matmode;
+    memcpy(s_push.proj, s_m[1], sizeof s_push.proj);
+    gfxGL_SetScreen(screen);
+    s_scissor = false;
+}
+
+void gfxGL_ScreenPop(void) {
+    s_screen = s_push.screen;
+    memcpy(s_vp, s_push.vp, sizeof s_vp);
+    memcpy(s_sc, s_push.sc, sizeof s_sc);
+    s_scissor = s_push.scissor;
+    s_matmode = s_push.matmode;
+    memcpy(s_m[1], s_push.proj, sizeof s_push.proj);
+}
+
 void gfxGL_OverlayEnd(void) {
     if (s_overlay_depth <= 0 || --s_overlay_depth) return;
     const GLSnap *s = &s_snap;
@@ -651,34 +802,64 @@ static void flush_game_vbs(void) {
 /* C3D_FrameBegin(SYNCDRAW) waits for the previous frame's GPU work with no time limit, so a
  * GPU fault freezes the console with nothing on screen and no log. Wait in steps instead and,
  * after 2 s, log the frame that never finished. */
+/* One frame's recorded draws, handed to the render thread. */
+typedef struct {
+    const Packet *pk;
+    int npk;
+    float iod, plane, hud;
+    int frame;
+    u32 ring_kb;
+    int copy_tex; /* glCopyTexImage2D of the frame before: texture to fill, 0 = none */
+} RenderJob;
+
+static RenderJob s_job, s_prev_job;
+
+/* glCopyTexImage2D (the pause screen's backdrop: the game grabs the race picture once when
+ * it pauses). The request made while recording frame N is carried out when frame N + 1 is
+ * built, first thing after the GPU has finished frame N and before the screens are cleared:
+ * the top screen's (left eye's) colour buffer then still holds frame N's finished picture.
+ * The copy is a GX TextureCopy straight from the colour buffer, which is stored in the same
+ * 8x8-tile layout as a texture: each 240-pixel tile row goes into a 256-texel texture row,
+ * 400 rows into 512. The picture stays rotated as the framebuffer is (fill_common maps the
+ * game's texture coordinates for such "transposed" textures). */
+static int s_copy_req, s_copy_prev;
+
+static void copy_top_to_texture(int id) {
+    GLTex *t = &s_tex[id];
+    if (!t->used || !t->has_data || !t->transposed) return;
+    const u32 fb_w = 240, fb_h = 400, line = fb_w * 8 * 4;
+    GX_TextureCopy((u32 *)s_top_l->frameBuf.colorBuf, GX_BUFFER_DIM(line >> 4, 0),
+                   (u32 *)t->tex.data, GX_BUFFER_DIM(line >> 4, (t->tex.width * 8 * 4 - line) >> 4),
+                   fb_w * fb_h * 4, 8);
+}
+
 static void frame_begin_watchdog(void) {
     C3D_FrameSync();
     u32 t0 = sys_ms();
     bool reported = false;
-    sys_stage("render (waiting for the GPU)");
     while (!C3D_FrameBegin(C3D_FRAME_NONBLOCK)) {
         if (!reported && sys_ms() - t0 > 2000) {
             reported = true;
-            sys_log("gpu: HANG -- frame %d has not finished after 2 s", s_frame - 1);
-            dump_frame("hung frame", s_frame - 1, s_pk == s_pkbuf[0] ? s_pkbuf[1] : s_pkbuf[0], s_prev_npk);
+            sys_log("gpu: HANG -- frame %d has not finished after 2 s", s_prev_job.frame);
+            dump_frame("hung frame", s_prev_job.frame, s_prev_job.pk, s_prev_job.npk);
         }
         svcSleepThread(1000000);
     }
-    if (reported) sys_log("gpu: frame %d finished after %lu ms", s_frame - 1, (unsigned long)(sys_ms() - t0));
-    sys_stage("render (building GPU commands)");
+    if (reported) sys_log("gpu: frame %d finished after %lu ms", s_prev_job.frame, (unsigned long)(sys_ms() - t0));
 }
 
-void gfxGL_EndFrame(void) {
-    if (s_idle_tex) {
-        bool bottom = false;
-        for (int i = 0; i < s_npk && !bottom; i++) bottom = s_pk[i].screen == GFX_SCREEN_BOTTOM;
-        if (!bottom) draw_bottom_idle();
-    }
-    float iod = s_iod;
-    gfxSet3D(iod > 0.0f);
-    s_frame++;
-    if (s_frame <= 3) dump_frame("frame", s_frame, s_pk, s_npk);
+/* Turns one frame's packets into GPU commands and submits them. Runs on the render thread
+ * (or inline when there is none); the only code that touches citro3d's context after init. */
+static void render_frame(const RenderJob *j) {
+    float iod = j->iod;
+    s_rplane = j->plane;
+    s_rhud = j->hud;
+    u64 t0 = svcGetSystemTick();
     frame_begin_watchdog();
+    u64 t1 = svcGetSystemTick();
+    s_wait_ms = (float)(t1 - t0) / CPU_TICKS_PER_MSEC;
+    if (j->copy_tex) copy_top_to_texture(j->copy_tex);
+    gfxSet3D(iod > 0.0f);
     /* depth 1 = far (24 bits; the top byte of a D24S8 word is the stencil) */
     C3D_RenderTargetClear(s_top_l, C3D_CLEAR_ALL, 0x000000FF, 0x00FFFFFF);
     C3D_RenderTargetClear(s_bot, C3D_CLEAR_ALL, 0x000000FF, 0x00FFFFFF);
@@ -690,26 +871,119 @@ void gfxGL_EndFrame(void) {
         float eye = pass == 0 ? -iod : pass == 2 ? iod : 0.0f;
         int scr_w = want == GFX_SCREEN_TOP ? 400 : 320;
         C3D_FrameDrawOn(rt);
-        for (int i = 0; i < s_npk; i++) {
-            const Packet *p = &s_pk[i];
+        rc_reset();
+        for (int i = 0; i < j->npk; i++) {
+            const Packet *p = &j->pk[i];
             if (p->screen != want) continue;
             replay(p, scr_w, eye);
             draws++;
         }
     }
-    GSPGPU_FlushDataCache(s_ring[s_ring_idx], s_ring_off);
-    flush_game_vbs();
     float use = C3D_GetCmdBufUsage();
     if (use > s_cmd_peak) {
         s_cmd_peak = use;
         if (use > 0.5f)
-            sys_log("gpu: command buffer %d%% full (frame %d, %d draws)", (int)(use * 100), s_frame, draws);
+            sys_log("gpu: command buffer %d%% full (frame %d, %d draws)", (int)(use * 100), j->frame, draws);
     }
     C3D_FrameEnd(0);
-    if (s_frame <= 3) sys_log("gpu: frame %d submitted, %d draws, ring %lu KB, cmdbuf %d%%", s_frame,
-                              draws, (unsigned long)(s_ring_off >> 10), (int)(use * 100));
-    s_prev_npk = s_npk;
+    s_build_ms = (float)(svcGetSystemTick() - t1) / CPU_TICKS_PER_MSEC;
+    if (j->frame <= 3) sys_log("gpu: frame %d submitted, %d draws, ring %lu KB, cmdbuf %d%%", j->frame,
+                               draws, (unsigned long)j->ring_kb, (int)(use * 100));
+    s_prev_job = *j;
     s_last_draws = draws;
+}
+
+/* The render thread. On the 3DS the game's ticks and turning the recorded draws into GPU
+ * commands each take a large share of a frame, and the Old 3DS runs out of time with many cars
+ * on screen. The commands for frame N are built on another core while the main core already
+ * runs the game ticks of frame N + 1: three packet lists and vertex rings rotate (recording,
+ * being built, on the GPU). New 3DS: core 2, which is the game's own. Old 3DS (or if core 2 is
+ * refused): core 1, the system core, of which an application may use up to 80%. If neither
+ * works the frame is built inline, as before. */
+static Thread s_rthread;
+static LightEvent s_ev_go, s_ev_done;
+static volatile bool s_rquit, s_rbusy;
+static int s_rcore = -1;
+
+static void render_main(void *arg) {
+    (void)arg;
+    for (;;) {
+        LightEvent_Wait(&s_ev_go);
+        if (s_rquit) break;
+        render_frame(&s_job);
+        LightEvent_Signal(&s_ev_done);
+    }
+}
+
+static void render_thread_start(void) {
+    LightEvent_Init(&s_ev_go, RESET_ONESHOT);
+    LightEvent_Init(&s_ev_done, RESET_ONESHOT);
+    s32 prio = 0x30;
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    bool n3ds = false;
+    APT_CheckNew3DS(&n3ds);
+    static const int k_cores[2] = {2, 1};
+    for (int i = n3ds ? 0 : 1; i < 2 && !s_rthread; i++) {
+        int core = k_cores[i];
+        if (core == 1) {
+            Result r = APT_SetAppCpuTimeLimit(80);
+            if (R_FAILED(r)) {
+                sys_log("gfx: system core time limit refused (%08lx)", (unsigned long)r);
+                continue;
+            }
+        }
+        s_rthread = threadCreate(render_main, NULL, 32 * 1024, prio > 0x18 ? prio - 1 : 0x18, core, false);
+        if (s_rthread) s_rcore = core;
+    }
+    if (s_rthread)
+        sys_log("gfx: GPU commands built on core %d", s_rcore);
+    else
+        sys_log("gfx: no second core; GPU commands built inline");
+}
+
+/* Wait until the render thread has submitted the frame it was given. Before the main thread
+ * reuses that frame's buffers, and before the HOME Menu / sleep / exit (sys.c apt_hook), when
+ * nothing may be talking to the GPU. */
+void gfxGL_WaitIdle(void) {
+    if (!s_rbusy) return;
+    u64 t = svcGetSystemTick();
+    LightEvent_Wait(&s_ev_done);
+    s_rbusy = false;
+    s_sync_ms = (float)(svcGetSystemTick() - t) / CPU_TICKS_PER_MSEC;
+}
+
+static void render_thread_stop(void) {
+    if (!s_rthread) return;
+    gfxGL_WaitIdle();
+    s_rquit = true;
+    LightEvent_Signal(&s_ev_go);
+    threadJoin(s_rthread, U64_MAX);
+    threadFree(s_rthread);
+    s_rthread = NULL;
+}
+
+void gfxGL_EndFrame(void) {
+    if (s_idle_tex) {
+        bool bottom = false;
+        for (int i = 0; i < s_npk && !bottom; i++) bottom = s_pk[i].screen == GFX_SCREEN_BOTTOM;
+        if (!bottom) draw_bottom_idle();
+    }
+    s_frame++;
+    if (s_frame <= 3) dump_frame("frame", s_frame, s_pk, s_npk);
+    /* written by this core: clean it out of the CPU cache here */
+    GSPGPU_FlushDataCache(s_ring[s_ring_idx], s_ring_off);
+    flush_game_vbs();
+    s_sync_ms = 0;
+    gfxGL_WaitIdle();
+    s_job = (RenderJob){s_pk, s_npk, s_iod, s_plane, s_hud, s_frame, s_ring_off >> 10, s_copy_prev};
+    s_copy_prev = s_copy_req;
+    s_copy_req = 0;
+    if (s_rthread) {
+        s_rbusy = true;
+        LightEvent_Signal(&s_ev_go);
+    } else {
+        render_frame(&s_job);
+    }
 }
 
 /* ------------------------------------------------------------------ packet capture */
@@ -727,7 +1001,34 @@ static Packet *new_packet(int kind) {
     return p;
 }
 
+/* The game sets the projection and texture matrices rarely but draws hundreds of times a
+ * frame: their converted forms are kept until the GL matrix changes. */
+static void final_projection_(C3D_Mtx *out, const float *proj);
 static void final_projection(C3D_Mtx *out, const float *proj) {
+    static float s_in[16];
+    static C3D_Mtx s_out;
+    static bool s_ok;
+    if (!s_ok || memcmp(s_in, proj, 64)) {
+        memcpy(s_in, proj, 64);
+        final_projection_(&s_out, proj);
+        s_ok = true;
+    }
+    *out = s_out;
+}
+
+static void to_c3d_tm(C3D_Mtx *out, const float *m) {
+    static float s_in[16];
+    static C3D_Mtx s_out;
+    static bool s_ok;
+    if (!s_ok || memcmp(s_in, m, 64)) {
+        memcpy(s_in, m, 64);
+        to_c3d(&s_out, m);
+        s_ok = true;
+    }
+    *out = s_out;
+}
+
+static void final_projection_(C3D_Mtx *out, const float *proj) {
     static const float tilt_zfix[16] = {
         /* column-major: x' = y, y' = -x, z' = -0.5 z - 0.5 w, w' = w */
         0, -1, 0, 0,
@@ -769,7 +1070,17 @@ static void fill_common(Packet *p) {
         }
     }
     to_c3d(&p->mv, s_m[0]);
-    to_c3d(&p->tm, s_m[2]);
+    if (s_bound < MAX_TEXTURES && s_tex[s_bound].transposed) {
+        /* A framebuffer copy: s' = GL's t (texel s runs up the screen) and t' = 1 - GL's s
+         * (colour buffer row n is screen column n, and the texture's t reads row
+         * (1 - t') * height). Checked in Azahar: the pause backdrop lines up with the race. */
+        float swap[16] = {0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1};
+        float m[16];
+        mtx_mul(m, swap, s_m[2]);
+        to_c3d_tm(&p->tm, m);
+    } else {
+        to_c3d_tm(&p->tm, s_m[2]);
+    }
     p->color = FVec4_New(s_color[0], s_color[1], s_color[2], s_color[3]);
     bool lit = s_lighting && s_light0;
     p->lflag = FVec4_New(lit ? 1.0f : 0.0f, 0, 0, 0);
@@ -805,7 +1116,101 @@ static void fill_common(Packet *p) {
     }
 }
 
+/* Small unlit draws (HUD digits and letters, sprites, particles: ~200 of the ~340 draws in a
+ * race, ~5 vertices each) cost citro3d far more in per-draw state than in vertices. They are
+ * stored as triangle lists with the modelview already applied, so a run of them with the same
+ * state becomes one draw. Lit draws are left alone: the shader needs the modelview for the
+ * normals and the light. */
+#define BATCH_MAX_VERTS 96
+
+static bool batch_same(const Packet *a, const Packet *b) {
+#define EQ(f) (!memcmp(&a->f, &b->f, sizeof a->f))
+    return EQ(screen) && EQ(persp) && EQ(wbuf) && EQ(wscale) && EQ(proj) && EQ(tm) && EQ(color) &&
+           EQ(tcflip) && EQ(tex) && EQ(texturing) && EQ(blend) && EQ(src) && EQ(dst) &&
+           EQ(depth_test) && EQ(depth_write) && EQ(depth_func) && EQ(cull) && EQ(cull_mode) &&
+           EQ(scissor) && EQ(sc) && EQ(vp) && EQ(fog) && EQ(fog_start) && EQ(fog_end) &&
+           EQ(fog_color) && EQ(fixed_nrm) && EQ(fixed_tc) && EQ(attr_size) && EQ(stride);
+#undef EQ
+}
+
+/* p = the new packet (last in s_pk, fill_common done). Returns false if the draw doesn't
+ * qualify; then the caller stores it the usual way. */
+static bool batch_draw(Packet *p, GPU_Primitive_t prim, GLint first, int count,
+                       const GLArray *const arr[3], const bool en[3], const int nsize[3]) {
+    const float *m = s_m[0];
+    if (p->lflag.x != 0.0f || count > BATCH_MAX_VERTS) return false;
+    if (s_va.size < 2 || s_va.size > 3) return false;
+    if (m[3] != 0.0f || m[7] != 0.0f || m[11] != 0.0f || m[15] != 1.0f) return false;
+    int out = prim == GPU_TRIANGLES ? count : (count - 2) * 3;
+    int comps = 3 + (en[1] ? 3 : 0) + (en[2] ? nsize[2] : 0);
+
+    /* the packet as it will be stored */
+    p->prim = GPU_TRIANGLES;
+    p->batched = true;
+    p->interleaved_direct = true;
+    p->stride = comps * 4;
+    memset(p->attr_size, 0, sizeof p->attr_size);
+    for (int i = 0; i < 3; i++) {
+        if (!en[i]) continue;
+        p->attr_fmt[i] = GPU_FLOAT;
+        p->attr_size[i] = i == 0 ? 3 : nsize[i];
+    }
+    if (!en[1]) p->fixed_nrm[2] = 1.0f;
+    Mtx_Identity(&p->mv);
+
+    Packet *q = s_npk >= 2 ? &s_pk[s_npk - 2] : NULL;
+    bool merge = q && q->kind == PK_DRAW && q->batched && q->count + out <= 0xFFFF &&
+                 q->buf_addr + (u32)q->count * q->stride == (u32)(s_ring[s_ring_idx] + s_ring_off) &&
+                 batch_same(q, p);
+    float *dst = merge ? ring_append(out * comps * 4) : ring_alloc(out * comps * 4);
+    if (!dst) {
+        s_npk--;
+        return true; /* out of ring: drop the draw, as the repack path does */
+    }
+    for (int k = 0; k < out; k++) {
+        int v;
+        if (prim == GPU_TRIANGLES) {
+            v = k;
+        } else {
+            int t = k / 3, c = k % 3;
+            if (prim == GPU_TRIANGLE_FAN)
+                v = c == 0 ? 0 : t + c;
+            else /* strip: odd triangles swap their first two vertices to keep the winding */
+                v = (t & 1) && c < 2 ? t + 1 - c : t + c;
+        }
+        float *o = dst + k * comps;
+        const GLArray *a = arr[0];
+        int ts = type_size(a->type);
+        const u8 *src = (const u8 *)a->ptr + (first + v) * (a->stride ? a->stride : a->size * ts);
+        float x = read_comp(src, a->type), y = read_comp(src + ts, a->type);
+        float z = a->size > 2 ? read_comp(src + 2 * ts, a->type) : 0.0f;
+        *o++ = m[0] * x + m[4] * y + m[8] * z + m[12];
+        *o++ = m[1] * x + m[5] * y + m[9] * z + m[13];
+        *o++ = m[2] * x + m[6] * y + m[10] * z + m[14];
+        for (int i = 1; i < 3; i++) {
+            if (!en[i]) continue;
+            a = arr[i];
+            int n = nsize[i];
+            ts = type_size(a->type);
+            src = (const u8 *)a->ptr + (first + v) * (a->stride ? a->stride : n * ts);
+            for (int c = 0; c < n; c++) *o++ = read_comp(src + c * ts, a->type);
+        }
+    }
+    if (merge) {
+        q->count += out;
+        s_npk--;
+    } else {
+        p->buf_addr = (u32)dst;
+        p->count = out;
+    }
+    return true;
+}
+
+static bool s_skip_draws;
+void gfxGL_SkipDraws(bool skip) { s_skip_draws = skip; }
+
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+    if (s_skip_draws) return;
     if (count <= 0 || !s_va.enabled || !s_va.ptr) return;
     if (s_cull && s_cull_face == GL_FRONT_AND_BACK) return;
     GPU_Primitive_t prim;
@@ -864,6 +1269,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
         }
     } else {
         /* Repack into floats: [pos][nrm][tc] */
+        if (batch_draw(p, prim, first, count, arr, en, nsize)) return;
         int comps = s_va.size + (en[1] ? 3 : 0) + (en[2] ? s_ta.size : 0);
         float *dst = ring_alloc(count * comps * 4);
         if (!dst) { s_npk--; return; }
@@ -890,6 +1296,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
 }
 
 void glClear(GLbitfield mask) {
+    if (s_skip_draws) return;
     mask &= GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT;
     if (!mask) return;
     /* Full-screen quad at the far plane (depth 1) through the normal pipeline. The clip
@@ -1219,27 +1626,35 @@ bool glTexImageT3X(const char *path, int *w, int *h) {
     return true;
 }
 
+/* The game only copies the whole top screen (the pause backdrop, m_20f70.c), so x, y, w and h
+ * are taken as that: the bound texture becomes a 256 x 512 framebuffer copy, filled when the
+ * next frame is built (copy_top_to_texture). */
 void glCopyTexImage2D(GLenum target, GLint level, GLenum ifmt, GLint x, GLint y, GLsizei w,
                       GLsizei h, GLint border) {
-    /* TODO(#12): framebuffer -> texture copy for the pause backdrop. For now the texture
-     * gets a dark fill so the paused screen still reads. */
-    (void)target; (void)level; (void)ifmt; (void)x; (void)y; (void)border;
+    (void)target; (void)level; (void)ifmt; (void)x; (void)y; (void)w; (void)h; (void)border;
     GLTex *t = &s_tex[s_bound];
     if (!s_bound || !t->used) return;
-    if (!t->has_data) {
-        if (!C3D_TexInit(&t->tex, w, h, GPU_RGBA8)) return;
+    if (!t->has_data || !t->transposed || t->tex.width != 256 || t->tex.height != 512) {
+        gfxGL_WaitIdle(); /* the render thread may still draw with the old texture */
+        if (t->has_data) C3D_TexDelete(&t->tex);
+        t->has_data = false;
+        if (!C3D_TexInit(&t->tex, 256, 512, GPU_RGBA8)) return;
         t->has_data = true;
-        t->w = w;
-        t->h = h;
+        t->w = 256;
+        t->h = 512;
+        t->transposed = true;
+        memset(t->tex.data, 0, t->tex.size); /* black until the copy lands */
+        GSPGPU_FlushDataCache(t->tex.data, t->tex.size);
     }
-    u32 *d = t->tex.data;
-    for (u32 i = 0; i < t->tex.size / 4; i++) d[i] = 0x202020FF;
-    GSPGPU_FlushDataCache(t->tex.data, t->tex.size);
     apply_params(t);
+    s_copy_req = s_bound;
 }
 
+/* Returns black. The game reads single pixels twice, and nothing reads the results: the
+ * pixel under the last touch every 180 race frames (tick.c, into 0x5c57c) and one texel of
+ * texture 0xa4 at race setup (m_0d800.c fn_0000fc28, into 0x3eb8c). Reading the GPU's
+ * picture back would mean waiting for it mid-frame, so it isn't done. */
 void glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum fmt, GLenum type, GLvoid *px) {
-    /* TODO(#12): only used for 1-pixel colour picks; returns black. */
     (void)x; (void)y; (void)fmt; (void)type;
     memset(px, 0, (size_t)w * h * 4);
 }

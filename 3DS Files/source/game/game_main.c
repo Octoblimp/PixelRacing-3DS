@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include "ios.h"
 #include "controls.h"
+#include "opt_menu.h"
 #include "input.h"
 
 void snd_shutdown(void); /* m_35df8.c */
@@ -106,6 +107,59 @@ const char *ios_doc_dir(void) {
     return "sdmc:/3ds/PixelRacing3D";
 }
 
+/* The game's save file (sg.m writes only "RaceData", 128 bytes). The CIA keeps it in its own
+ * save data (meta/app.rsf SaveDataSize), like a retail title: it is backed up, moved and
+ * deleted with the title, and written files only count once committed. The .3dsx has no
+ * save data of its own and keeps using the SD card, as does the CIA if its save data can't be
+ * opened. The first time the CIA finds no save file there it takes the SD card's over, so
+ * progress from the builds that saved to the SD card carries on. */
+static int s_save_arch = -1; /* -1 not decided, 0 SD card, 1 save data */
+
+static void save_take_over(const char *name) {
+    char from[64], to[64];
+    snprintf(from, sizeof from, "%s/%s", ios_doc_dir(), name);
+    snprintf(to, sizeof to, "save:/%s", name);
+    FILE *t = fopen(to, "rb");
+    if (t) {
+        fclose(t);
+        return;
+    }
+    FILE *f = fopen(from, "rb");
+    if (!f) return;
+    uint8_t buf[4096];
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    t = fopen(to, "wb");
+    if (!t) return;
+    bool ok = fwrite(buf, 1, n, t) == n;
+    fclose(t);
+    ios_save_commit();
+    sys_log("save: %s taken over from the SD card (%u bytes)%s", name, (unsigned)n, ok ? "" : ", write failed");
+}
+
+const char *ios_save_dir(void) {
+    if (s_save_arch < 0) {
+        s_save_arch = 0;
+        if (sys_is_cia()) {
+            Result r = archiveMount(ARCHIVE_SAVEDATA, fsMakePath(PATH_EMPTY, ""), "save");
+            if (R_SUCCEEDED(r)) {
+                s_save_arch = 1;
+                save_take_over("RaceData");
+            }
+            sys_log("save: %s (%08lx)", s_save_arch ? "the title's save data" : "SD card, no save data",
+                    (unsigned long)r);
+        }
+    }
+    return s_save_arch ? "save:" : ios_doc_dir();
+}
+
+void ios_save_commit(void) {
+    if (s_save_arch == 1) {
+        Result r = archiveCommitSaveData("save");
+        if (R_FAILED(r)) sys_log("save: commit failed (%08lx)", (unsigned long)r);
+    }
+}
+
 uint32_t ios_ms(void) { return sys_ms(); }
 
 /* ---------------------------------------------------------------- input */
@@ -113,10 +167,15 @@ uint32_t ios_ms(void) { return sys_ms(); }
 /* ProcessTouches: (touch / view size) * virtual size. The view is the iOS landscape view
  * (480x320 or 1024x768 by bit 0 of 0x3f83c); here it is whatever input.c reports, already in
  * virtual-screen units. Table entry: {u8 active; float x, y, prevx, prevy}. */
-static void feed_touches(bool menu) {
+static bool racing(void);
+
+static void feed_touches(void) {
     InputTouch t[INPUT_MAX_TOUCHES];
     int n = input_touches(t, INPUT_MAX_TOUCHES);
-    if (menu) { /* the bottom screen belongs to the controls menu; only a pause press gets through */
+    /* The bottom screen shows the gauges and the map during a race, where a touch would land
+     * on the iPhone version's invisible gas / brake / steering buttons: then only the buttons'
+     * own virtual touches get through. */
+    if (racing()) {
         int k = 0;
         for (int i = 0; i < n; i++)
             if (t[i].virt) t[k++] = t[i];
@@ -174,14 +233,7 @@ static void bind_key(int slot, int idx, uint32_t keys) {
                       on ? AT_F32(b, 4) / vh : 0.0f);
 }
 
-/* menu: the controls menu is open, the game gets no buttons; pause: press the game's pause
- * button this tick (opening the menu mid-race pauses the race first) */
-static void feed_buttons(bool menu, bool pause) {
-    if (menu) {
-        for (int i = 0; i < NSLOTS; i++) input_bind_button(i, 0, 0, 0);
-        if (pause) bind_key(0, BTN_PAUSE, KEY_SELECT);
-        return;
-    }
+static void feed_buttons(void) {
     const Controls *c = controls_get();
     bool race = racing();
     uint32_t pad_lr = race ? 0 : KEY_CPAD_LEFT | KEY_CPAD_RIGHT;
@@ -204,11 +256,10 @@ static void feed_buttons(bool menu, bool pause) {
  * produces exactly that, with the calibration held at 0. The per-car handling and the
  * blending with the game's auto-steer stay the game's own. accel[2] tilts the horizon by its
  * cosine: 0 keeps it level. accel[0] keeps the console's pitch, as the iPhone's did. */
-static void feed_steering(bool menu) {
+static void feed_steering(void) {
     float g[3];
     input_accel_g(g);
     float m = controls_steer();
-    if (menu) m = 0.0f;
     float a = fabsf(m);
     float v = a > 0.0f ? (30.0f * a + 1.01f) / 1.2f + 2.0f : 0.0f;
     G_F32(0x42754) = (float)(int)(-g[1] * 90.0f);
@@ -252,13 +303,9 @@ static void log_state(void) {
  * one-time init fn_00004254(1); after that every call is one 60 Hz game tick. */
 void app_tick(bool render) {
     input_update();
-    bool was_open = controls_menu_open();
-    bool menu = controls_menu_update();
-    /* opening the menu mid-race pauses the race, so the cars don't drive on behind it */
-    bool pause = menu && !was_open && racing();
-    feed_buttons(menu, pause);
-    feed_touches(menu);
-    feed_steering(menu);
+    feed_buttons();
+    feed_touches();
+    feed_steering();
     if (G_U8(0x3e91c)) {
         fn_00004254(1);
         G_U8(0x3e91c) = 0;
@@ -268,7 +315,7 @@ void app_tick(bool render) {
     G_U8(0x3f814) = 0;
     G_U8(0x3e918) = render;
     fn_00005ac4(render ? 1 : 0);
-    if (render) controls_menu_draw();
+    if (render) controls_bottom_draw(optm_meter());
     input_end_tick();
     log_state();
 }

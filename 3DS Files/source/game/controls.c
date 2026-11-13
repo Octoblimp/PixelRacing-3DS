@@ -1,12 +1,12 @@
-/* Controls settings, their save file and the bottom-screen menu (see controls.h).
+/* Controls and 3D settings and their save file (see controls.h). The player changes them on
+ * the Options screen's Controls and 3D pages (opt_menu.c).
  *
  * Steering reaches the game through its own tilt input (game_main.c feed_steering), so the
  * Circle Pad, the D-pad and the tilt all go through the game's steering code and its per-car
  * handling, exactly as the iPhone's accelerometer did.
  *
- * The menu is drawn with the menus' bitmap font (texture 0x97) through the GL
- * overlay, so it looks like part of the game. SELECT opens and closes it; while it is open the
- * game gets no input, and opening it mid-race pauses the race first. */
+ * Build 10 and earlier had a bottom-screen menu on SELECT for these; build 11 moved them into
+ * the game's own Options screen. */
 #include <3ds.h>
 #include <math.h>
 #include <stdio.h>
@@ -36,10 +36,13 @@ static const Controls k_default = {
     .gas = BTN_A,
     .brake = BTN_B,
     .nitro = BTN_R,
+    .stereo_depth = 100,
+    .stereo_pop = 1,
+    .stereo_tilt = 0,
+    .hud_depth = 0,
 };
 
-static Controls s_c;
-static bool s_dirty;
+static Controls s_c, s_saved;
 
 const Controls *controls_get(void) { return &s_c; }
 
@@ -62,6 +65,10 @@ static bool sanitize(Controls *c) {
     c->stick_sens = clampi(c->stick_sens, 50, 200);
     c->stick_dz = clampi(c->stick_dz, 0, 40);
     c->tilt_range = clampi(c->tilt_range, 10, 60);
+    c->stereo_depth = clampi(c->stereo_depth, 50, 150);
+    c->stereo_pop = clampi(c->stereo_pop, 0, 2);
+    c->stereo_tilt = c->stereo_tilt != 0;
+    c->hud_depth = c->hud_depth != 0;
     if (!button_ok(c->gas) || !button_ok(c->brake) || !button_ok(c->nitro) ||
         c->gas == c->brake || c->gas == c->nitro || c->brake == c->nitro) {
         c->gas = k_default.gas;
@@ -92,6 +99,10 @@ static void load(void) {
         else if (!strcmp(key, "gas")) s_c.gas = v;
         else if (!strcmp(key, "brake")) s_c.brake = v;
         else if (!strcmp(key, "nitro")) s_c.nitro = v;
+        else if (!strcmp(key, "3d_depth")) s_c.stereo_depth = v;
+        else if (!strcmp(key, "3d_popout")) s_c.stereo_pop = v;
+        else if (!strcmp(key, "3d_while_tilting")) s_c.stereo_tilt = v;
+        else if (!strcmp(key, "hud_depth")) s_c.hud_depth = v;
     }
     fclose(f);
     if (!sanitize(&s_c)) {
@@ -109,18 +120,23 @@ static void save(void) {
         return;
     }
     fprintf(f, "steer %d\nstick_sensitivity %d\nstick_dead_zone %d\ntilt_range %d\n"
-               "gas %d\nbrake %d\nnitro %d\n",
+               "gas %d\nbrake %d\nnitro %d\n3d_depth %d\n3d_popout %d\n3d_while_tilting %d\n"
+               "hud_depth %d\n",
             s_c.steer, s_c.stick_sens, s_c.stick_dz, s_c.tilt_range, s_c.gas, s_c.brake,
-            s_c.nitro);
+            s_c.nitro, s_c.stereo_depth, s_c.stereo_pop, s_c.stereo_tilt, s_c.hud_depth);
     fclose(f);
     sys_log("controls: saved (steer %s, stick %d%% dz %d%%, tilt %d deg, gas %s brake %s nitro %s)",
             s_c.steer == STEER_TILT ? "tilt" : "pad", s_c.stick_sens, s_c.stick_dz,
             s_c.tilt_range, k_buttons[s_c.gas].name, k_buttons[s_c.brake].name,
             k_buttons[s_c.nitro].name);
+    sys_log("controls: 3d depth %d, pop-out %d, while tilting %d, hud depth %d", s_c.stereo_depth,
+            s_c.stereo_pop, s_c.stereo_tilt, s_c.hud_depth);
+    s_saved = s_c;
 }
 
 void controls_init(void) {
     load();
+    s_saved = s_c;
     sys_log("controls: steer %s, stick %d%% dz %d%%, tilt %d deg, gas %s brake %s nitro %s",
             s_c.steer == STEER_TILT ? "tilt" : "pad", s_c.stick_sens, s_c.stick_dz,
             s_c.tilt_range, k_buttons[s_c.gas].name, k_buttons[s_c.brake].name,
@@ -182,25 +198,20 @@ static float steer_now(void) {
     return tilt_steer();
 }
 
-static float s_steer; /* this tick's value, for the menu's meter */
+static float s_steer; /* this tick's value, for the Controls page's meter */
 
 float controls_steer(void) {
     s_steer = steer_now();
     return s_steer;
 }
 
-/* ---------------------------------------------------------------- menu */
+/* ---------------------------------------------------------------- Options pages */
 
-enum { ROW_STEER, ROW_SENS, ROW_DZ, ROW_TILT, ROW_GAS, ROW_BRAKE, ROW_NITRO, ROW_RESET, NROWS };
-static const char *const k_row_name[NROWS] = {
-    "STEERING", "STICK SENSITIVITY", "STICK DEAD ZONE", "TILT RANGE",
-    "GAS",      "BRAKE",             "NITRO",           "RESET TO DEFAULTS",
-};
+Controls *controls_edit(void) { return &s_c; }
 
-static bool s_open;
-static int s_row;
-
-bool controls_menu_open(void) { return s_open; }
+const char *controls_button_name(int choice) {
+    return choice >= 0 && choice < NBUTTONS ? k_buttons[choice].name : "?";
+}
 
 static int next_button(int cur, int dir) {
     for (int i = 0; i < NBUTTONS; i++) {
@@ -210,66 +221,29 @@ static int next_button(int cur, int dir) {
     return cur;
 }
 
-/* Moves one action to the next button; an action that already had that button takes this
- * one's old button, so no two actions ever share one. */
-static void set_button(int *which, int dir) {
-    int old = *which, nb = next_button(old, dir);
+/* Moves one action (0 gas, 1 brake, 2 nitro) to the next button; an action that already had
+ * that button takes this one's old button, so no two actions ever share one. */
+void controls_cycle_button(int action, int dir) {
     int *acts[] = {&s_c.gas, &s_c.brake, &s_c.nitro};
+    int *which = acts[action < 0 ? 0 : action > 2 ? 2 : action];
+    int old = *which, nb = next_button(old, dir);
     for (int i = 0; i < 3; i++)
         if (acts[i] != which && *acts[i] == nb) *acts[i] = old;
     *which = nb;
 }
 
-static void change(int row, int dir) {
-    Controls before = s_c;
-    switch (row) {
-    case ROW_STEER: s_c.steer = s_c.steer == STEER_PAD ? STEER_TILT : STEER_PAD; break;
-    case ROW_SENS: s_c.stick_sens = clampi(s_c.stick_sens + 10 * dir, 50, 200); break;
-    case ROW_DZ: s_c.stick_dz = clampi(s_c.stick_dz + 5 * dir, 0, 40); break;
-    case ROW_TILT: s_c.tilt_range = clampi(s_c.tilt_range + 5 * dir, 10, 60); break;
-    case ROW_GAS: set_button(&s_c.gas, dir); break;
-    case ROW_BRAKE: set_button(&s_c.brake, dir); break;
-    case ROW_NITRO: set_button(&s_c.nitro, dir); break;
-    case ROW_RESET: s_c = k_default; break;
-    }
-    if (memcmp(&before, &s_c, sizeof s_c)) s_dirty = true;
+void controls_reset(void) {
+    Controls c = k_default;
+    c.stereo_depth = s_c.stereo_depth;
+    c.stereo_pop = s_c.stereo_pop;
+    c.stereo_tilt = s_c.stereo_tilt;
+    c.hud_depth = s_c.hud_depth;
+    s_c = c;
 }
 
-/* Bottom-screen layout, in pixels */
-#define ROW_Y0 32.0f
-#define ROW_H 19.0f
-
-bool controls_menu_update(void) {
-    uint32_t down = input_down();
-    if (!s_open) {
-        if (down & KEY_SELECT) {
-            s_open = true;
-            s_dirty = false;
-            sys_log("controls: menu opened");
-            return true;
-        }
-        return false;
-    }
-    if (down & (KEY_SELECT | KEY_B | KEY_START)) {
-        s_open = false;
-        if (s_dirty) save();
-        return true; /* this tick's buttons belonged to the menu */
-    }
-    if (down & (KEY_DUP | KEY_CPAD_UP)) s_row = (s_row + NROWS - 1) % NROWS;
-    if (down & (KEY_DDOWN | KEY_CPAD_DOWN)) s_row = (s_row + 1) % NROWS;
-    if (down & (KEY_DLEFT | KEY_CPAD_LEFT)) change(s_row, -1);
-    if (down & (KEY_DRIGHT | KEY_CPAD_RIGHT | KEY_A)) change(s_row, 1);
-    if (down & KEY_TOUCH) {
-        /* tap a row to pick it, tap the picked row again to change it */
-        touchPosition tp;
-        hidTouchRead(&tp);
-        int r = (int)(((float)tp.py - ROW_Y0) / ROW_H);
-        if (tp.py >= ROW_Y0 && r >= 0 && r < NROWS) {
-            if (r == s_row) change(r, tp.px < 160 && r != ROW_RESET ? -1 : 1);
-            s_row = r;
-        }
-    }
-    return true;
+void controls_commit(void) {
+    sanitize(&s_c);
+    if (memcmp(&s_c, &s_saved, sizeof s_c)) save();
 }
 
 /* --- drawing
@@ -327,79 +301,47 @@ static void text(float x, float y, const char *s, float sz, float r, float g, fl
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
 }
 
-/* Right-aligned at x, shrunk if it would run left of `min_x`. */
-static void text_right(float x, float min_x, float y, const char *s, float sz, float r, float g,
-                       float b) {
-    float w = text_w(s, sz);
-    if (x - w < min_x && w > 0.0f) {
-        float k = (x - min_x) / w;
-        y += sz * (1.0f - k) * 0.5f;
-        sz *= k;
-        w = text_w(s, sz);
-    }
-    text(x - w, y, s, sz, r, g, b);
-}
-
 static void text_center(float y, const char *s, float sz, float r, float g, float b) {
     text((320.0f - text_w(s, sz)) * 0.5f, y, s, sz, r, g, b);
 }
 
-static void row_value(int row, char *buf, size_t n) {
-    switch (row) {
-    case ROW_STEER: snprintf(buf, n, "%s", s_c.steer == STEER_TILT ? "TILT" : "CIRCLE PAD"); break;
-    case ROW_SENS: snprintf(buf, n, "%d", s_c.stick_sens); break; /* the font has no % */
-    case ROW_DZ: snprintf(buf, n, "%d", s_c.stick_dz); break;
-    case ROW_TILT: snprintf(buf, n, "%d DEG", s_c.tilt_range); break;
-    case ROW_GAS: snprintf(buf, n, "%s", k_buttons[s_c.gas].name); break;
-    case ROW_BRAKE: snprintf(buf, n, "%s", k_buttons[s_c.brake].name); break;
-    case ROW_NITRO: snprintf(buf, n, "%s", k_buttons[s_c.nitro].name); break;
-    default: buf[0] = 0; break;
-    }
+static bool s_hud_bottom; /* this frame drew the race gauges on the bottom screen */
+
+void hud_bottom_begin(float gx, float gy, float px, float py, float scale) {
+    /* The HUD's sprites (flag 4, fn_0000526c) widen the 640 x 480 layout to the virtual
+     * screen, 720 units wide (x 1.125), which the top screen stretches further to 5:3. The
+     * bottom screen is 4:3 like the layout, so the ortho undoes both and the gauges keep
+     * their shape. The modelview is the game's 2D one (a plain scale, fn_00004e68). */
+    float mv[16];
+    glGetFloatv(GL_MODELVIEW_MATRIX, mv);
+    float kx = mv[0] * (float)G_S32(0x40368) / 640.0f, ky = mv[5] * (float)G_S32(0x40374) / 480.0f;
+    float x = kx * gx + mv[12], y = ky * gy + mv[13];
+    float sx = scale / kx, sy = scale / ky;
+    float l = x - px / sx, t = y - py / sy;
+    gfxGL_ScreenPush(GFX_SCREEN_BOTTOM);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrthof(l, l + 320.0f / sx, t + 240.0f / sy, t, 0.0f, 1.0f);
+    s_hud_bottom = true;
 }
 
-static void draw_menu(float steer) {
-    gfxGL_OverlayRect(0, 0, 320, 240, 0.04f, 0.04f, 0.08f, 1.0f);
-    gfxGL_OverlayRect(0, 0, 320, 28, 0.55f, 0.05f, 0.05f, 1.0f);
-    text_center(7.0f, "CONTROLS", 14.0f, 1.0f, 1.0f, 1.0f);
+void hud_bottom_end(void) {
+    gfxGL_ScreenPop();
+}
 
-    for (int r = 0; r < NROWS; r++) {
-        float y = ROW_Y0 + (float)r * ROW_H;
-        bool sel = r == s_row;
-        bool dim = (r == ROW_TILT && s_c.steer != STEER_TILT);
-        if (sel) gfxGL_OverlayRect(4, y, 312, ROW_H - 1, 0.75f, 0.12f, 0.08f, 0.9f);
-        float lc = dim ? 0.5f : 1.0f;
-        text(10.0f, y + 4.0f, k_row_name[r], 10.0f, lc, lc, lc);
-        char v[24];
-        row_value(r, v, sizeof v);
-        if (v[0]) {
-            char shown[32];
-            snprintf(shown, sizeof shown, sel ? "< %s >" : "%s", v);
-            float min_x = 16.0f + text_w(k_row_name[r], 10.0f);
-            text_right(310.0f, min_x, y + 4.0f, shown, 10.0f, 1.0f, dim ? 0.55f : 0.85f,
-                       dim ? 0.35f : 0.2f);
-        }
-    }
-
-    /* live steering meter, to try the settings before racing */
-    float my = ROW_Y0 + NROWS * ROW_H + 6.0f;
-    text(10.0f, my, "STEER", 8.0f, 0.8f, 0.8f, 0.8f);
-    gfxGL_OverlayRect(70, my, 240, 8, 0.2f, 0.2f, 0.25f, 1.0f);
-    float cx = 190.0f, w = steer * 120.0f;
+void controls_bottom_draw(bool meter) {
+    bool hud = s_hud_bottom;
+    s_hud_bottom = false;
+    if (!hud) gfxGL_DrawBottomIdle();
+    if (!meter) return;
+    /* the Controls page: a live steering meter, to try the settings before racing */
+    gfxGL_OverlayBegin(GFX_SCREEN_BOTTOM);
+    gfxGL_OverlayRect(0, 200, 320, 40, 0.0f, 0.0f, 0.0f, 0.6f);
+    text_center(206.0f, "STEERING", 8.0f, 0.85f, 0.85f, 0.85f);
+    float my = 222.0f, cx = 160.0f, w = s_steer * 120.0f;
+    gfxGL_OverlayRect(40, my, 240, 8, 0.2f, 0.2f, 0.25f, 1.0f);
     gfxGL_OverlayRect(w < 0 ? cx + w : cx, my, fabsf(w), 8, 1.0f, 0.8f, 0.15f, 1.0f);
     gfxGL_OverlayRect(cx - 0.5f, my - 2, 1, 12, 1, 1, 1, 1);
-
-    text_center(224.0f, "SELECT OR B: CLOSE AND SAVE", 8.0f, 0.7f, 0.7f, 0.75f);
-}
-
-void controls_menu_draw(void) {
-    if (!s_open) gfxGL_DrawBottomIdle();
-    gfxGL_OverlayBegin(GFX_SCREEN_BOTTOM);
-    if (s_open) {
-        draw_menu(s_steer);
-    } else {
-        gfxGL_OverlayRect(0, 224, 320, 16, 0.0f, 0.0f, 0.0f, 0.55f);
-        text_center(228.0f, "SELECT: CONTROLS", 8.0f, 0.85f, 0.85f, 0.85f);
-    }
     gfxGL_OverlayEnd();
     G_S32(0x40608) = -1; /* the game's bound-texture cache: the font was bound behind its back */
 }

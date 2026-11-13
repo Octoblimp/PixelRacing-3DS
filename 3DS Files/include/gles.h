@@ -201,6 +201,10 @@ void gfxGL_DiscardDraws(void);
 void gfxGL_EndFrame(void);
 /* Stereo: interocular strength from the 3D slider (0 = off). Applied to perspective draws. */
 void gfxGL_SetStereo(float iod);
+/* plane: distance of the screen plane (nearer things come out of the screen); hud: how far
+ * the 2D draws (HUD, menus' text) float in front of the screen, as a share of the eye
+ * separation (0 = at screen depth). */
+void gfxGL_SetStereoDepth(float plane, float hud);
 /* Image shown on the bottom screen on frames that draw nothing there: a .t3x whose w x h
  * image sits in the top-left corner of the (POT) texture. */
 void gfxGL_SetBottomIdle(const char *t3x_path, int w, int h);
@@ -213,6 +217,12 @@ void gfxGL_DrawBottomIdle(void);
  * left, alpha blending, texturing on, vertex array on, other arrays off); End restores it. */
 void gfxGL_OverlayBegin(GfxScreen screen);
 void gfxGL_OverlayEnd(void);
+/* Send the game's own drawing to another screen: Push saves the screen, viewport, scissor,
+ * matrix mode and projection, then sets `screen` with a full-screen viewport and no scissor;
+ * the caller loads its projection. Every other piece of state is left to the game. Pop
+ * restores. Not nested. */
+void gfxGL_ScreenPush(GfxScreen screen);
+void gfxGL_ScreenPop(void);
 /* An untextured rectangle, between OverlayBegin and OverlayEnd. */
 void gfxGL_OverlayRect(float x, float y, float w, float h, float r, float g, float b, float a);
 /* Load a tex3ds .t3x into the bound texture; returns false on error.
@@ -225,3 +235,12 @@ void gfxGL_LinearFree(void *p);
 void gfxGL_Flush(const void *p, uint32_t size);
 /* Draw statistics of the last frame, for the debug overlay. */
 int gfxGL_LastDrawCount(void);
+/* While set, draws and clears are ignored (sys.c: game ticks whose picture is not shown).
+ * Everything else (textures, matrices, state) still applies. */
+void gfxGL_SkipDraws(bool skip);
+/* Times of the last frame, in ms: the render thread waiting for the GPU to finish the frame
+ * before, building the GPU commands, the GPU's own time, and the main thread waiting for the
+ * render thread. */
+void gfxGL_FrameTimes(float *wait_ms, float *build_ms, float *gpu_ms, float *sync_ms);
+/* Wait until the render thread is idle (before the HOME Menu, sleep or exit). */
+void gfxGL_WaitIdle(void);

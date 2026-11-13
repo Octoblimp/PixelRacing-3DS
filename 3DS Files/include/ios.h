@@ -71,8 +71,12 @@ void *ios_alloc(uint32_t size);         /* linear (GPU-readable) heap; CxAlloc32
 void ios_free(void *p);
 /* Path of a bundle resource: "foo.png" -> "romfs:/foo.t3x" (textures) or "romfs:/foo". */
 const char *ios_res_path(const char *name, char *buf, int bufsize);
-/* Directory for save files ("NSDocumentDirectory"), without trailing slash. */
+/* Directory for the port's own files (controls.cfg) on the SD card, without trailing slash. */
 const char *ios_doc_dir(void);
+/* Directory for the game's save file ("NSDocumentDirectory", sg.m), without trailing slash:
+ * the CIA's own save data, else the SD card. ios_save_commit() after writing a file. */
+const char *ios_save_dir(void);
+void ios_save_commit(void);
 uint32_t ios_ms(void);                  /* mach_absolute_time in ms */
 
 #include <protos.h> /* angle brackets: tools/check_module.sh points -I at a private copy */

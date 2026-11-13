@@ -14,6 +14,7 @@
  *   0x3f980 music volume, 0x3fa24 current front-end screen, 0x3fa28 requested screen
  *   0x3fa60..0x3fa78 one-frame button flags written by fn_00030bf4 */
 #include "ios.h"
+#include "opt_menu.h"
 
 #define CAR_SIZE 0x678
 #define CAR(i) ((uint8_t *)G(0x48ae0) + (i) * CAR_SIZE)
@@ -1109,6 +1110,8 @@ void fn_00030318(void)
         G_S32(0x3faa8) = 0;
     else if (G_S32(0x3faa8) <= -1)
         G_S32(0x3faa8) = G_S32(0x3ec00) - 1;
+    if (scr == 0xc && optm_input()) /* the port's Controls / 3D pages (opt_menu.c) */
+        return;
 
     if (G_U8(0x3fa74) & 1) { /* ok */
         int sel = G_S32(0x3faa8);

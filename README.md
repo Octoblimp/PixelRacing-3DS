@@ -39,9 +39,11 @@ previous run in `PixelRacing_debug_prev.txt`) is on by default;
 that `build_romfs.py` picks up, so run it first.
 
 Controls: in a race the Circle Pad and the D-pad steer, A gas, B brake, R nitro, START pause; in
-the menus A/B are OK/back. SELECT opens the port's controls menu on the bottom screen (Circle Pad
-or tilt steering, stick sensitivity and dead zone, tilt range, which buttons are gas, brake and
-nitro), saved to `sdmc:/3ds/PixelRacing3D/controls.cfg` (`source/game/controls.c`).
+the menus A/B are OK/back. The game's Settings screen gains two pages of the port's: Controls
+(Circle Pad or tilt steering, stick sensitivity and dead zone, tilt range, which buttons are gas,
+brake and nitro) and 3D (depth, pop-out, 3D while tilting, HUD depth), saved to
+`sdmc:/3ds/PixelRacing3D/controls.cfg` (`source/game/opt_menu.c`, `source/game/controls.c`; the
+pages' voxel props come from `tools/make_menu_props.py`).
 
 ## Tools
 | Script | What it does |

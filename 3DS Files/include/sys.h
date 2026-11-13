@@ -10,6 +10,8 @@ void app_tick(bool render);
 void app_exit(void);
 
 bool sys_is_new3ds(void);
+/* True when running as the installed CIA (not the .3dsx). */
+bool sys_is_cia(void);
 /* Application memory region in bytes (64/80/96/124 MB depending on model and launch). */
 uint32_t sys_app_mem(void);
 /* Presented frames per second: 60 on New 3DS, 30 on Old 3DS (simulation stays at 60 Hz). */

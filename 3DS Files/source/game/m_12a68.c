@@ -11,6 +11,7 @@
  *   0x5c160 per-view camera block (0x80 bytes per player): +0x3b0 yaw (deg)
  */
 #include "ios.h"
+#include "opt_menu.h"
 
 #define D2R u2f(0x3c8efa39) /* 0.0174533f */
 
@@ -1023,7 +1024,9 @@ void fn_00012a68(int player, int pass)
             old = N_F(o, 0x27c);
             N_F(o, 0x27c) = -old;
             if (STATE == 12) {
-                if (i <= 6)
+                if (optm_prop(o, i, pass, slot)) /* the port's rows and pages (opt_menu.c) */
+                    ;
+                else if (i <= 6)
                     m12a68_props_state12(o, i, q, pass, slot, extra);
             } else if (STATE == 11) {
                 N_F(o, 0x27c) = old;
