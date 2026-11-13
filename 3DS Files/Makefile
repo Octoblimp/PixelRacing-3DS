@@ -54,6 +54,12 @@ APP_DESCRIPTION	:=	3D Pixel Racing iOS Game Port to Nintendo 3DS
 APP_AUTHOR		:=	Octoblimp
 ICON			:=	meta/icon.png
 
+# The CIA's title version (FBI and the HOME Menu show it as 1.0.0); makerom takes
+# it as major << 10 | minor << 4 | micro.
+APP_VERSION_MAJOR	:= 1
+APP_VERSION_MINOR	:= 0
+APP_VERSION_MICRO	:= 0
+
 # The HOME Menu banner: the Wii channel banner rebuilt as an animated CGFX with its jingle
 # (../tools/banner/make_banner.py, committed in meta/pixelracing).
 ifneq ($(wildcard meta/pixelracing/banner.cgfx),)
@@ -136,6 +142,7 @@ cia: all
 	@"$(BANNERTOOL)" makesmdh -s "$(APP_TITLE)" -l "$(APP_DESCRIPTION)" -p "$(APP_AUTHOR)" \
 		-i $(ICON) -o meta/icon.icn
 	@"$(MAKEROM)" -f cia -o "$(TARGET).cia" -DAPP_ENCRYPTED=false -target t -exefslogo \
+		-ver $$(( ($(APP_VERSION_MAJOR) << 10) | ($(APP_VERSION_MINOR) << 4) | $(APP_VERSION_MICRO) )) \
 		-elf "$(OUTPUT).elf" -icon meta/icon.icn -banner meta/banner.bnr \
 		-rsf meta/app.rsf -DAPP_ROMFS="$(ROMFS)"
 	@echo built ... $(TARGET).cia
