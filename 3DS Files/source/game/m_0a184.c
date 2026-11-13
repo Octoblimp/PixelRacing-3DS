@@ -517,7 +517,7 @@ void fn_0000b054(int track, int weather, int dir, int reset)
     int a = 0, b = 0; /* sscanf targets: object kind, scale */
 
 #ifdef DEBUG_LOG
-    {   /* Debug: sdmc:/3ds/PixelRacing_track "track weather" forces every race onto them. */
+    if (sys_debug()) {   /* Debug: sdmc:/3ds/PixelRacing_track "track weather" forces every race onto them. */
         FILE *f = fopen("sdmc:/3ds/PixelRacing_track", "rb");
         if (f) {
             int t = -1, w = -1;

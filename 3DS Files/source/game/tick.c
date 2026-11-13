@@ -65,6 +65,7 @@ static void tick_reset_cars(void)
         FILE *f = fopen("sdmc:/3ds/PixelRacing_fuel", "rb");
         float v;
         g_fuel_test = 0;
+        if (f && !sys_debug()) { fclose(f); f = NULL; }
         if (f) {
             if (fscanf(f, "%f", &v) == 1 && v >= 0.0f && v <= 1.0f) {
                 AT_F32(G(0x48ae0), 0x20) = v;

@@ -155,7 +155,7 @@ void nr_advance(uint32_t hash) {
         net_send(NET_BROADCAST, &m, sizeof m);
     }
 #ifdef DEBUG_LOG
-    if (s_tick % 600 == 0)
+    if (sys_debug() && s_tick % 600 == 0)
         sys_log("net race: tick %lu hash %08lx", (unsigned long)s_tick, (unsigned long)hash);
 #endif
     s_tick++;

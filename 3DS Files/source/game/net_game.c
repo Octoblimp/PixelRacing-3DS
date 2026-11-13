@@ -48,6 +48,7 @@ static void check_loopback(void) {
     static bool s_checked;
     if (s_checked) return;
     s_checked = true;
+    if (!sys_debug()) return;
     FILE *f = fopen("sdmc:/3ds/PixelRacing_netloop", "rb");
     if (f) {
         fclose(f);
@@ -172,7 +173,7 @@ static uint32_t race_hash(void) {
 void ng_race_stepped(void) {
     if (!nr_active()) return;
 #ifdef DEBUG_LOG
-    if (nr_tick() % 300 == 0) {
+    if (sys_debug() && nr_tick() % 300 == 0) {
         char buf[128];
         int o = 0;
         for (int p = 0; p < s_players && o < 100; p++)

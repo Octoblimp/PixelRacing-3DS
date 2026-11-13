@@ -41,7 +41,38 @@ static bool is_cia(void) {
 }
 bool sys_is_cia(void) { return is_cia(); }
 
-/* The debug log (on unless built with DEBUG=0): sdmc:/PixelRacing_debug.txt for the CIA, or
+/* Settings file on the SD card, written with the defaults on first boot so it can be found
+ * and edited on a PC: "debug_log 1" turns the debug log on (off by default). */
+#define CONFIG_PATH "sdmc:/3ds/PixelRacing3D/config.txt"
+static bool s_debug;
+bool sys_debug(void) { return s_debug; }
+
+static void config_load(void) {
+#ifdef DEBUG_LOG
+    FILE *f = fopen(CONFIG_PATH, "r");
+    if (!f) {
+        mkdir("sdmc:/3ds", 0777);
+        mkdir("sdmc:/3ds/PixelRacing3D", 0777);
+        f = fopen(CONFIG_PATH, "w");
+        if (f) {
+            fputs("# 3D Pixel Racing 3DS settings\n"
+                  "# debug_log 1 writes a debug log to the SD card (sdmc:/PixelRacing_debug.txt\n"
+                  "# for the CIA, sdmc:/3ds/PixelRacing_debug.txt for the .3dsx). 0 = off.\n"
+                  "debug_log 0\n", f);
+            fclose(f);
+        }
+        return;
+    }
+    char line[128], key[32];
+    int v;
+    while (fgets(line, sizeof line, f))
+        if (line[0] != '#' && sscanf(line, "%31s %d", key, &v) == 2 && !strcmp(key, "debug_log"))
+            s_debug = v != 0;
+    fclose(f);
+#endif
+}
+
+/* The debug log (when config.txt says debug_log 1): sdmc:/PixelRacing_debug.txt for the CIA, or
  * sdmc:/3ds/PixelRacing_debug.txt for the .3dsx. Each line is stamped with the
  * time since boot and flushed at once, so the log survives a crash up to its last line. The
  * previous run's log is kept as PixelRacing_debug_prev.txt; the file stops growing at LOG_MAX. */
@@ -52,7 +83,7 @@ void sys_log(const char *fmt, ...) {
     static FILE *f;
     static bool s_failed, s_full;
     static uint32_t s_size;
-    if (s_failed || s_full) return;
+    if (!s_debug || s_failed || s_full) return;
     LightLock_Lock(&s_log_lock); /* the watchdog thread logs too */
     if (!f) {
         const char *dir = is_cia() ? "sdmc:/" : "sdmc:/3ds/";
@@ -168,6 +199,7 @@ static int ticks_due(void) {
  * and free linear memory. */
 static void perf_frame(void) {
 #ifdef DEBUG_LOG
+    if (!s_debug) return;
     static uint32_t s_start, s_last, s_frames, s_worst;
     /* where a frame's time goes: game ticks (CPU), waiting for the GPU, building GPU commands
      * (CPU), and the GPU's own drawing time; sums and maxima over the 10 s */
@@ -256,6 +288,7 @@ int main(int argc, char **argv) {
     if (n3ds) osSetSpeedupEnable(true);
     s_t0 = svcGetSystemTick();
     LightLock_Init(&s_log_lock);
+    config_load();
 
     gfxInitDefault();
     romfsInit();
@@ -272,8 +305,8 @@ int main(int argc, char **argv) {
 #ifdef DEBUG_LOG
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    Thread wd = threadCreate(watchdog, NULL, 16 * 1024, prio > 0x18 ? prio - 1 : 0x18, -2, false);
-    if (!wd) sys_log("watchdog: could not start");
+    Thread wd = !s_debug ? NULL : threadCreate(watchdog, NULL, 16 * 1024, prio > 0x18 ? prio - 1 : 0x18, -2, false);
+    if (s_debug && !wd) sys_log("watchdog: could not start");
 #endif
 
     app_init();

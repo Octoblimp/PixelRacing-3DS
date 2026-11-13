@@ -71,8 +71,8 @@ CFLAGS	:=	-g -Wall -O2 -mword-relocations -ffunction-sections -fno-strict-aliasi
 			-Wno-unused-variable -Wno-unused-but-set-variable \
 			$(ARCH)
 CFLAGS	+=	$(INCLUDE) -D__3DS__ -std=gnu11
-# The debug log (sdmc:/PixelRacing_debug.txt, .3dsx: sdmc:/3ds/) is on by default for tester builds;
-# make DEBUG=0 leaves it out.
+# The debug log (sdmc:/PixelRacing_debug.txt, .3dsx: sdmc:/3ds/) is built in but off until
+# sdmc:/3ds/PixelRacing3D/config.txt says "debug_log 1"; make DEBUG=0 leaves it out altogether.
 DEBUG	?=	1
 ifeq ($(DEBUG),1)
 CFLAGS	+=	-DDEBUG_LOG

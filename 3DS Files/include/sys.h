@@ -21,12 +21,14 @@ uint32_t sys_ms(void);
 /* Ask the main loop to quit (returns to HOME Menu / hbmenu). */
 void sys_quit(void);
 /* Debug log to sdmc:/PixelRacing_debug.txt (CIA) or sdmc:/3ds/PixelRacing_debug.txt (.3dsx),
- * time-stamped; the previous run is kept as PixelRacing_debug_prev.txt. On by default;
- * `make DEBUG=0` builds it out. */
+ * time-stamped; the previous run is kept as PixelRacing_debug_prev.txt. Off unless
+ * sdmc:/3ds/PixelRacing3D/config.txt says "debug_log 1"; `make DEBUG=0` builds it out. */
 void sys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* Names what the main loop is doing right now ("game", "render", ...). A watchdog thread logs
  * it if the main loop stops advancing, so a freeze on hardware can be placed. */
 void sys_stage(const char *what);
+/* True when the debug log is on (config.txt); the debug-only test hooks check it too. */
+bool sys_debug(void);
 
 /* What heapcfg.c asked the kernel for at boot and what it got (bytes). */
 typedef struct {

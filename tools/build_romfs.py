@@ -58,7 +58,22 @@ def write_image(binpath, out):
                 if lo < hi and not zerofill and foff:
                     img[lo - IMG_LO:hi - IMG_LO] = d[foff + lo - addr:foff + hi - addr]
         off += sz
+    strip_build_paths(img)
     open(os.path.join(out, "ios_image.bin"), "wb").write(img)
+
+
+def strip_build_paths(img):
+    """The original developer's source paths (assert file names, "/Users/<name>/.../x.m") are
+    cut down to the file name in place: same address, NUL-padded, so the game still reads
+    "x.m" and no personal working directory ends up in a build."""
+    import re
+    n = 0
+    for m in list(re.finditer(rb"/(?:Users|home)/[^\0]*?/([^/\0]+)\0", bytes(img))):
+        name = m.group(1)
+        img[m.start():m.end()] = name + b"\0" * (m.end() - m.start() - len(name))
+        n += 1
+    if n:
+        print("ios_image.bin: %d build paths cut down to file names" % n)
 
 
 # Store-only images the game never loads.

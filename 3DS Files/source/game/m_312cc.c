@@ -1037,7 +1037,8 @@ slipstream:
     }
 
 #ifdef DEBUG_LOG
-    m312cc_watch(car, pad, c, tile);
+    if (sys_debug())
+        m312cc_watch(car, pad, c, tile);
 #endif
     if (pad == -2) {
         /* no driver: wheels straight, nothing pressed */
