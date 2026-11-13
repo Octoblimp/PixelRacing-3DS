@@ -215,6 +215,10 @@ static void perf_frame(void) {
                     (int)(s_sum[3] * k + 0.5f), (int)(s_max[3] + 0.5f), (int)(s_sum[4] * k + 0.5f),
                     (int)(s_max[4] + 0.5f), gfxGL_LastDrawCount());
         }
+        uint32_t tv, tm, vf;
+        gfxGL_TexStats(&tv, &tm, &vf);
+        sys_log("perf: textures %lu KB in VRAM, %lu KB in main memory, VRAM free %lu KB",
+                (unsigned long)tv, (unsigned long)tm, (unsigned long)vf);
         for (int i = 0; i < 5; i++) s_sum[i] = s_max[i] = 0;
         s_start = now;
         s_frames = s_worst = 0;

@@ -205,6 +205,8 @@ void gfxGL_SetStereo(float iod);
  * the 2D draws (HUD, menus' text) float in front of the screen, as a share of the eye
  * separation (0 = at screen depth). */
 void gfxGL_SetStereoDepth(float plane, float hud);
+/* Texture memory: KB of textures in VRAM, in main memory, and VRAM still free. */
+void gfxGL_TexStats(uint32_t *vram_kb, uint32_t *main_kb, uint32_t *vram_free_kb);
 /* Image shown on the bottom screen on frames that draw nothing there: a .t3x whose w x h
  * image sits in the top-left corner of the (POT) texture. */
 void gfxGL_SetBottomIdle(const char *t3x_path, int w, int h);

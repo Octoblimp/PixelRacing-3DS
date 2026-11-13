@@ -143,6 +143,116 @@ void gfxGL_FrameTimes(float *wait_ms, float *build_ms, float *gpu_ms, float *syn
     *sync_ms = s_sync_ms;
 }
 
+/* ------------------------------------------------------------------ textures in VRAM
+ *
+ * The hardware log (build 10, New 3DS) shows the GPU's time per frame hardly depends on the
+ * number of draws (63 draws took as long as 240): it goes on the pixels, and drawing the top
+ * screen a second time for 3D doubled it. Every texture was in main memory (FCRAM), which the
+ * GPU reads far slower than its own VRAM. So .t3x textures move into VRAM while it has room
+ * (about 3.8 MB after the render targets); the rest stay in main memory.
+ *
+ * The move: the texture is loaded into main memory as before, a VRAM texture of the same shape
+ * replaces it straight away, and the render thread copies the data across before it starts
+ * the next frame, with citro3d's C3D_SyncTextureCopy (the CPU never writes VRAM, and only the
+ * render thread touches citro3d). Not inside the frame: a race loads dozens of textures at
+ * once, more than citro3d's GX queue holds (it panics when full). The main-memory copy is
+ * freed by the main thread afterwards. */
+#define VRAM_RESERVE (64 * 1024)
+#define MAX_VJOBS 128
+enum { VJ_FREE, VJ_QUEUED, VJ_DONE };
+typedef struct {
+    void *staging, *dst;
+    u32 size;
+    volatile int state;
+} VramJob;
+static VramJob s_vjob[MAX_VJOBS];
+static LightLock s_vlock;
+
+static inline bool is_vram(const void *p) {
+    u32 a = (u32)p;
+    return a >= 0x1F000000 && a < 0x1F600000;
+}
+
+/* Main thread: frees the main-memory copies of finished moves. Call with s_vlock held. */
+static void vram_reap(void) {
+    for (int i = 0; i < MAX_VJOBS; i++)
+        if (s_vjob[i].state == VJ_DONE) {
+            linearFree(s_vjob[i].staging);
+            s_vjob[i].state = VJ_FREE;
+        }
+}
+
+/* Main thread: moves a freshly loaded main-memory texture to VRAM if it fits. */
+static void tex_to_vram(C3D_Tex *tex) {
+    u32 size = tex->size;
+    if (!tex->data || is_vram(tex->data) || vramSpaceFree() < size + VRAM_RESERVE) return;
+    C3D_Tex v;
+    C3D_TexInitParams ip = {tex->width, tex->height, tex->maxLevel, tex->fmt, GPU_TEX_2D, true};
+    if (!C3D_TexInitWithParams(&v, NULL, ip)) return;
+    if (v.size != size) {
+        C3D_TexDelete(&v);
+        return;
+    }
+    LightLock_Lock(&s_vlock);
+    vram_reap();
+    int slot = -1;
+    for (int i = 0; i < MAX_VJOBS && slot < 0; i++)
+        if (s_vjob[i].state == VJ_FREE) slot = i;
+    if (slot < 0) {
+        LightLock_Unlock(&s_vlock);
+        C3D_TexDelete(&v);
+        return;
+    }
+    GSPGPU_FlushDataCache(tex->data, size);
+    s_vjob[slot].staging = tex->data;
+    s_vjob[slot].dst = v.data;
+    s_vjob[slot].size = size;
+    s_vjob[slot].state = VJ_QUEUED;
+    LightLock_Unlock(&s_vlock);
+    v.param = tex->param;
+    v.border = tex->border;
+    v.lodParam = tex->lodParam;
+    *tex = v; /* the main-memory copy now belongs to the job */
+}
+
+/* Main thread: deletes a texture; a move into it that hasn't been issued yet is dropped. */
+static void tex_delete(C3D_Tex *tex) {
+    if (is_vram(tex->data)) {
+        LightLock_Lock(&s_vlock);
+        for (int i = 0; i < MAX_VJOBS; i++)
+            if (s_vjob[i].state == VJ_QUEUED && s_vjob[i].dst == tex->data)
+                s_vjob[i].state = VJ_DONE;
+        LightLock_Unlock(&s_vlock);
+    }
+    C3D_TexDelete(tex);
+}
+
+/* Render thread, before C3D_FrameBegin: C3D_SyncTextureCopy waits for the previous frame's
+ * GPU work, then copies and waits for the copy, so the data is there before any draw of the
+ * frame about to be built. */
+static void vram_jobs_run(void) {
+    LightLock_Lock(&s_vlock);
+    for (int i = 0; i < MAX_VJOBS; i++)
+        if (s_vjob[i].state == VJ_QUEUED) {
+            C3D_SyncTextureCopy((u32 *)s_vjob[i].staging, 0, (u32 *)s_vjob[i].dst, 0,
+                                s_vjob[i].size, 8);
+            s_vjob[i].state = VJ_DONE;
+        }
+    LightLock_Unlock(&s_vlock);
+}
+
+void gfxGL_TexStats(uint32_t *vram_kb, uint32_t *main_kb, uint32_t *vram_free_kb) {
+    u32 v = 0, m = 0;
+    for (int i = 0; i < MAX_TEXTURES; i++)
+        if (s_tex[i].used && s_tex[i].has_data) {
+            if (is_vram(s_tex[i].tex.data)) v += s_tex[i].tex.size;
+            else m += s_tex[i].tex.size;
+        }
+    *vram_kb = v / 1024;
+    *main_kb = m / 1024;
+    *vram_free_kb = vramSpaceFree() / 1024;
+}
+
 /* The start is 16-byte aligned and the size is not rounded, so batch_draw can append to the
  * last allocation with ring_append. */
 static void *ring_alloc(u32 size) {
@@ -267,6 +377,7 @@ static void render_thread_stop(void);
 
 void gfxGL_Init(void) {
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4);
+    LightLock_Init(&s_vlock);
     s_top_l = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
     s_top_r = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
     s_bot = C3D_RenderTargetCreate(240, 320, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
@@ -302,7 +413,9 @@ void gfxGL_Init(void) {
 void gfxGL_Exit(void) {
     render_thread_stop();
     for (int i = 0; i < MAX_TEXTURES; i++)
-        if (s_tex[i].has_data) C3D_TexDelete(&s_tex[i].tex);
+        if (s_tex[i].has_data) tex_delete(&s_tex[i].tex);
+    for (int i = 0; i < MAX_VJOBS; i++)
+        if (s_vjob[i].state != VJ_FREE) linearFree(s_vjob[i].staging);
     for (int i = 0; i < 3; i++) {
         linearFree(s_ring[i]);
         free(s_pkbuf[i]);
@@ -855,6 +968,7 @@ static void render_frame(const RenderJob *j) {
     s_rplane = j->plane;
     s_rhud = j->hud;
     u64 t0 = svcGetSystemTick();
+    vram_jobs_run();
     frame_begin_watchdog();
     u64 t1 = svcGetSystemTick();
     s_wait_ms = (float)(t1 - t0) / CPU_TICKS_PER_MSEC;
@@ -1519,7 +1633,7 @@ void glDeleteTextures(GLsizei n, const GLuint *ids) {
     for (int k = 0; k < n; k++) {
         GLuint i = ids[k];
         if (i == 0 || i >= MAX_TEXTURES || !s_tex[i].used) continue;
-        if (s_tex[i].has_data) C3D_TexDelete(&s_tex[i].tex);
+        if (s_tex[i].has_data) tex_delete(&s_tex[i].tex);
         memset(&s_tex[i], 0, sizeof s_tex[i]);
         if (s_bound == i) s_bound = 0;
     }
@@ -1572,7 +1686,7 @@ void glTexImage2D(GLenum target, GLint level, GLint ifmt, GLsizei w, GLsizei h, 
     (void)target; (void)ifmt; (void)border; (void)fmt;
     GLTex *t = &s_tex[s_bound];
     if (!s_bound || !t->used || level != 0) return;
-    if (t->has_data) C3D_TexDelete(&t->tex);
+    if (t->has_data) tex_delete(&t->tex);
     t->has_data = false;
     bool rgba4 = type == GL_UNSIGNED_SHORT_4_4_4_4;
     if (!C3D_TexInit(&t->tex, w, h, rgba4 ? GPU_RGBA4 : GPU_RGBA8)) return;
@@ -1610,12 +1724,18 @@ bool glTexImageT3X(const char *path, int *w, int *h) {
     if (!s_bound || !t->used) return false;
     FILE *f = fopen(path, "rb");
     if (!f) return false;
-    if (t->has_data) C3D_TexDelete(&t->tex);
+    if (t->has_data) tex_delete(&t->tex);
     t->has_data = false;
     Tex3DS_Texture t3x = Tex3DS_TextureImportStdio(f, &t->tex, NULL, false);
     fclose(f);
     if (!t3x) return false;
     Tex3DS_TextureFree(t3x);
+    tex_to_vram(&t->tex);
+    {
+        const char *base = strrchr(path, '/');
+        sys_log("tex: %s %lu KB %s", base ? base + 1 : path, (unsigned long)(t->tex.size / 1024),
+                is_vram(t->tex.data) ? "vram" : "main");
+    }
     t->has_data = true;
     t->w = t->tex.width;
     t->h = t->tex.height;
@@ -1636,7 +1756,7 @@ void glCopyTexImage2D(GLenum target, GLint level, GLenum ifmt, GLint x, GLint y,
     if (!s_bound || !t->used) return;
     if (!t->has_data || !t->transposed || t->tex.width != 256 || t->tex.height != 512) {
         gfxGL_WaitIdle(); /* the render thread may still draw with the old texture */
-        if (t->has_data) C3D_TexDelete(&t->tex);
+        if (t->has_data) tex_delete(&t->tex);
         t->has_data = false;
         if (!C3D_TexInit(&t->tex, 256, 512, GPU_RGBA8)) return;
         t->has_data = true;
