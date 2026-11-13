@@ -2,19 +2,24 @@
 ;   position  = projection * modelView * v0
 ;   texcoord  = texMtx * (v2, 0, 1), then t' = tcFlip.x + tcFlip.y * t
 ;   color     = lighting ? clamp(lightAmb + lightDif * max(N.L, 0)) : curColor
+;   texcoord1 = fog factor f = clamp(fogParam.x + fogParam.y * eye.z), as the u of an 8-texel
+;               ramp texture (gfx_c3d.c set_fog); fog off = (1, 0)
 ; One light (GL_LIGHT0), position in eye space (w = 0 directional). Normals are normalised
 ; after the modelView transform, so GL_SHORT/GL_BYTE normals need no scaling.
 
 .fvec projection[4], modelView[4], texMtx[4]
-.fvec curColor, lightPos, lightAmb, lightDif, lightFlag, tcFlip
+.fvec curColor, lightPos, lightAmb, lightDif, lightFlag, tcFlip, fogParam
 
 .constf consts(0.0, 1.0, -1.0, 0.5)
+; ramp texel centres: u = 0.5/8 + f * 7/8
+.constf fogc(0.0625, 0.875, 0.5, 0.0)
 .alias zeros consts.xxxx
 .alias ones  consts.yyyy
 
 .out outpos position
 .out outclr color
 .out outtc0 texcoord0
+.out outtc1 texcoord1
 
 .in inpos v0
 .in innrm v1
@@ -46,6 +51,17 @@
 	add r3.y, tcFlip.x, r3.y
 	mov r3.zw, consts.xy
 	mov outtc0, r3
+
+	; fog factor from the eye-space depth
+	mul r10.x, fogParam.y, r1.z
+	add r10.x, fogParam.x, r10.x
+	max r10.x, zeros, r10.x
+	min r10.x, ones, r10.x
+	mul r10.x, fogc.y, r10.x
+	add r10.x, fogc.x, r10.x
+	mov r10.y, fogc.z
+	mov r10.zw, consts.xy
+	mov outtc1, r10
 
 	; eye-space normal, normalised
 	dp3 r4.x, modelView[0], innrm

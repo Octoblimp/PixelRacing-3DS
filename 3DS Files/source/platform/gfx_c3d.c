@@ -7,11 +7,13 @@
  * mid-frame clears (drawn as full-screen quads) straightforward.
  *
  * Coordinate conventions: the game works in GL window space for a 400x240 (top) or 320x240
- * (bottom) screen. The 3DS framebuffers are rotated 90 degrees and the PICA clip-space depth
- * range is [-1 (near), 0 (far)], so every projection is premultiplied by
+ * (bottom) screen. The 3DS framebuffers are rotated 90 degrees and the PICA clips z to
+ * [-w, 0], so every projection is premultiplied by
  *   tilt  : x' = y, y' = -x
- *   zfix  : z' = 0.5 z - 0.5 w
- * and depth comparisons are mirrored (GL_LESS -> GPU_GREATER). Texture t is flipped
+ *   zfix  : z' = -0.5 z - 0.5 w     (0 at the near plane, -w at the far plane)
+ * and the depth value is 0 at the near plane and 1 at the far plane, as in GL, so depth
+ * comparisons are GL's own and the depth buffer is cleared to 1 (see fill_common for why
+ * near has to be the 0 end). Texture t is flipped
  * (t' = 1 - t) because the game's textures have t = 0 at the image top (CGImage upload order)
  * while tex3ds stores images with t = 0 at the bottom. */
 #include <3ds.h>
@@ -72,7 +74,7 @@ typedef struct {
     C3D_Mtx proj, mv, tm;
     bool persp;
     bool wbuf;    /* perspective draw with linear (W-buffer) depth, see fill_common */
-    float wscale; /* GPUREG_DEPTHMAP_SCALE for the W-buffer: -1 / near */
+    float wscale; /* GPUREG_DEPTHMAP_SCALE for the W-buffer: -1 / far */
     C3D_FVec color, lpos, lamb, ldif, lflag, tcflip;
     /* state */
     GLuint tex;
@@ -81,7 +83,7 @@ typedef struct {
     GPU_BLENDFACTOR src, dst;
     GPU_CULLMODE cull_mode;
     s16 vp[4], sc[4];
-    float fog_near, fog_far, fog_start, fog_end;
+    float fog_start, fog_end;
     u32 fog_color;
     /* clear */
     u32 clear_color;
@@ -91,7 +93,7 @@ typedef struct {
 static C3D_RenderTarget *s_top_l, *s_top_r, *s_bot;
 static DVLB_s *s_dvlb;
 static shaderProgram_s s_prog;
-static int u_proj, u_mv, u_tm, u_color, u_lpos, u_lamb, u_ldif, u_lflag, u_tcflip;
+static int u_proj, u_mv, u_tm, u_color, u_lpos, u_lamb, u_ldif, u_lflag, u_tcflip, u_fog;
 
 static GLTex s_tex[MAX_TEXTURES];
 static GLuint s_bound;
@@ -120,8 +122,6 @@ static float s_cmd_peak;
 static u8 *s_ring[2];
 static u32 s_ring_off;
 static int s_ring_idx;
-static C3D_FogLut s_foglut;
-static float s_foglut_key[5] = {-1, -1, -1, -1, -1};
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -176,14 +176,14 @@ static float *cur_mtx(void) {
 }
 
 static GPU_TESTFUNC depth_func(GLenum f) {
-    switch (f) { /* mirrored: PICA depth grows towards the viewer */
+    switch (f) { /* depth is 0 near, 1 far, as in GL */
     case GL_NEVER: return GPU_NEVER;
-    case GL_LESS: return GPU_GREATER;
+    case GL_LESS: return GPU_LESS;
     case GL_EQUAL: return GPU_EQUAL;
-    case GL_LEQUAL: return GPU_GEQUAL;
-    case GL_GREATER: return GPU_LESS;
+    case GL_LEQUAL: return GPU_LEQUAL;
+    case GL_GREATER: return GPU_GREATER;
     case GL_NOTEQUAL: return GPU_NOTEQUAL;
-    case GL_GEQUAL: return GPU_LEQUAL;
+    case GL_GEQUAL: return GPU_GEQUAL;
     default: return GPU_ALWAYS;
     }
 }
@@ -245,6 +245,8 @@ static u32 rgba8(const float *c) {
 
 /* ------------------------------------------------------------------ init / frame */
 
+static void fog_init(void);
+
 void gfxGL_Init(void) {
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4);
     s_top_l = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
@@ -266,7 +268,9 @@ void gfxGL_Init(void) {
     u_ldif = shaderInstanceGetUniformLocation(s_prog.vertexShader, "lightDif");
     u_lflag = shaderInstanceGetUniformLocation(s_prog.vertexShader, "lightFlag");
     u_tcflip = shaderInstanceGetUniformLocation(s_prog.vertexShader, "tcFlip");
+    u_fog = shaderInstanceGetUniformLocation(s_prog.vertexShader, "fogParam");
     C3D_BindProgram(&s_prog);
+    fog_init();
 
     s_pkbuf[0] = malloc(sizeof(Packet) * MAX_PACKETS);
     s_pkbuf[1] = malloc(sizeof(Packet) * MAX_PACKETS);
@@ -318,35 +322,46 @@ void gfxGL_SetScreen(GfxScreen screen) {
 
 /* ------------------------------------------------------------------ packet replay */
 
+/* Fog without the PICA's fog unit. On real hardware, enabling the fog unit (GPU_FOG) made
+ * depth writes unreliable: a triangle drawn later covered a nearer one drawn earlier in the same
+ * draw call, on most frames (Jul's hair, Max's ears, the podium cars). Azahar does not show it.
+ * Seen on a New 3DS through the debugger: fog mode 0 -> right on every frame; fog mode 5 ->
+ * wrong, with the Z-buffer or the W-buffer, with or without the flip bit.
+ * So the vertex shader computes GL's linear fog factor from the eye-space depth and passes it as
+ * texcoord1; texture unit 1 holds an 8-texel luminance ramp, and TexEnv stage 1 blends:
+ * colour = stage0 * f + fog colour * (1 - f). */
+static C3D_Tex s_fogtex;
+
+static void fog_init(void) {
+    C3D_TexInit(&s_fogtex, 8, 8, GPU_L8);
+    u8 *d = s_fogtex.data;
+    for (u32 y = 0; y < 8; y++)
+        for (u32 x = 0; x < 8; x++) {
+            u32 m = (x & 1) | (y & 1) << 1 | (x & 2) << 1 | (y & 2) << 2 | (x & 4) << 2 | (y & 4) << 3;
+            d[m] = (u8)(x * 255 / 7);
+        }
+    C3D_TexFlush(&s_fogtex);
+    C3D_TexSetFilter(&s_fogtex, GPU_LINEAR, GPU_LINEAR);
+    C3D_TexSetWrap(&s_fogtex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+}
+
 static void set_fog(const Packet *p) {
+    C3D_TexEnv *env = C3D_GetTexEnv(1);
+    C3D_TexEnvInit(env);
+    C3D_FogGasMode(GPU_NO_FOG, GPU_PLAIN_DENSITY, false);
     if (!p->fog) {
-        C3D_FogGasMode(GPU_NO_FOG, GPU_PLAIN_DENSITY, false);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_fog, 1.0f, 0.0f, 0, 0);
         return;
     }
-    if (s_foglut_key[0] != p->fog_near || s_foglut_key[1] != p->fog_far ||
-        s_foglut_key[2] != p->fog_start || s_foglut_key[3] != p->fog_end ||
-        s_foglut_key[4] != (float)p->wbuf) {
-        float data[256];
-        for (int i = 0; i <= 128; i++) {
-            /* the fog LUT is indexed by the fragment's depth value: linear with the W-buffer */
-            float z = p->wbuf ? p->fog_far - (i / 128.0f) * (p->fog_far - p->fog_near)
-                              : FogLut_CalcZ(i / 128.0f, p->fog_near, p->fog_far);
-            float v = (p->fog_end - z) / (p->fog_end - p->fog_start);
-            if (v < 0) v = 0;
-            if (v > 1) v = 1;
-            if (i < 128) data[i] = v;
-            if (i > 0) data[i + 127] = v - data[i - 1];
-        }
-        FogLut_FromArray(&s_foglut, data);
-        s_foglut_key[0] = p->fog_near;
-        s_foglut_key[1] = p->fog_far;
-        s_foglut_key[2] = p->fog_start;
-        s_foglut_key[3] = p->fog_end;
-        s_foglut_key[4] = (float)p->wbuf;
-    }
-    C3D_FogGasMode(GPU_FOG, GPU_PLAIN_DENSITY, false);
-    C3D_FogColor(p->fog_color);
-    C3D_FogLutBind(&s_foglut);
+    /* f = (end - d) / (end - start), d = -eye.z */
+    float inv = 1.0f / (p->fog_end - p->fog_start);
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, u_fog, p->fog_end * inv, inv, 0, 0);
+    C3D_TexBind(1, &s_fogtex);
+    C3D_TexEnvSrc(env, C3D_RGB, GPU_PREVIOUS, GPU_CONSTANT, GPU_TEXTURE1);
+    C3D_TexEnvFunc(env, C3D_RGB, GPU_INTERPOLATE);
+    C3D_TexEnvSrc(env, C3D_Alpha, GPU_PREVIOUS, 0, 0);
+    C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+    C3D_TexEnvColor(env, p->fog_color);
 }
 
 /* GL window rect (origin bottom-left, landscape) -> rotated framebuffer rect. */
@@ -664,9 +679,10 @@ void gfxGL_EndFrame(void) {
     s_frame++;
     if (s_frame <= 3) dump_frame("frame", s_frame, s_pk, s_npk);
     frame_begin_watchdog();
-    C3D_RenderTargetClear(s_top_l, C3D_CLEAR_ALL, 0x000000FF, 0);
-    C3D_RenderTargetClear(s_bot, C3D_CLEAR_ALL, 0x000000FF, 0);
-    if (iod > 0.0f) C3D_RenderTargetClear(s_top_r, C3D_CLEAR_ALL, 0x000000FF, 0);
+    /* depth 1 = far (24 bits; the top byte of a D24S8 word is the stencil) */
+    C3D_RenderTargetClear(s_top_l, C3D_CLEAR_ALL, 0x000000FF, 0x00FFFFFF);
+    C3D_RenderTargetClear(s_bot, C3D_CLEAR_ALL, 0x000000FF, 0x00FFFFFF);
+    if (iod > 0.0f) C3D_RenderTargetClear(s_top_r, C3D_CLEAR_ALL, 0x000000FF, 0x00FFFFFF);
     int draws = 0;
     for (int pass = 0; pass < (iod > 0.0f ? 3 : 2); pass++) {
         GfxScreen want = pass == 1 ? GFX_SCREEN_BOTTOM : GFX_SCREEN_TOP;
@@ -713,10 +729,10 @@ static Packet *new_packet(int kind) {
 
 static void final_projection(C3D_Mtx *out, const float *proj) {
     static const float tilt_zfix[16] = {
-        /* column-major: x' = y, y' = -x, z' = 0.5 z - 0.5 w, w' = w */
+        /* column-major: x' = y, y' = -x, z' = -0.5 z - 0.5 w, w' = w */
         0, -1, 0, 0,
         1, 0, 0, 0,
-        0, 0, 0.5f, 0,
+        0, 0, -0.5f, 0,
         0, 0, -0.5f, 1,
     };
     float m[16];
@@ -732,16 +748,24 @@ static void fill_common(Packet *p) {
      * the 3DS GPU's depth interpolation is too coarse there: surfaces a few units apart (a
      * face and the ears behind it, a car body and the driver inside) showed through each other
      * and flickered on hardware, though not in emulators. The W-buffer stores
-     *   depth = z' * scale  (z' = clip z after zfix = n (d - f) / (f - n), d = eye distance)
-     * with scale = -1/n, i.e. (f - d) / (f - n): linear in distance, near 1, far 0, so the
-     * GL_LESS -> GPU_GREATER mapping and the clear value 0 stay as they are. */
+     *   depth = z' * scale  (z' = clip z after zfix = -f (d - n) / (f - n), d = eye distance)
+     * with scale = -1/f, i.e. (d - n) / (f - n): linear in distance, near 0, far 1.
+     *
+     * Near must be the 0 end. The GPU carries z'/w in 24-bit floats (16-bit mantissa) and the
+     * W-buffer multiplies it back by w * scale. Build 5 had it the other way round (near 1,
+     * scale -1/n): close surfaces then had depths just under 1, where those floats are
+     * coarsest, and the error was scaled up by d/n on top. Jul's hair, a shell 1% larger than
+     * the head (0.2 units in front of the face at d = 60..100), lost the depth test in patches
+     * that changed every frame (seen on hardware through the debugger, at a steady 60 fps).
+     * With near at 0 the same surfaces sit at depths around 0.05..0.1 and the factor is d/f:
+     * at least ten times finer close up, and no coarser anywhere. */
     p->wbuf = false;
     if (p->persp && s_m[1][11] == -1.0f) {
         const float *m = s_m[1];
         float n = m[14] / (m[10] - 1.0f), f = m[14] / (m[10] + 1.0f);
         if (n > 0.0f && f > n) {
             p->wbuf = true;
-            p->wscale = -1.0f / n;
+            p->wscale = -1.0f / f;
         }
     }
     to_c3d(&p->mv, s_m[0]);
@@ -775,9 +799,6 @@ static void fill_common(Packet *p) {
     p->scissor = s_scissor;
     p->fog = s_fog && p->persp;
     if (p->fog) {
-        const float *m = s_m[1];
-        p->fog_near = m[14] / (m[10] - 1.0f);
-        p->fog_far = m[14] / (m[10] + 1.0f);
         p->fog_start = s_fog_start;
         p->fog_end = s_fog_end > s_fog_start ? s_fog_end : s_fog_start + 1.0f;
         p->fog_color = rgba8(s_fog_color) & 0xFFFFFF;
@@ -871,10 +892,13 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
 void glClear(GLbitfield mask) {
     mask &= GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT;
     if (!mask) return;
-    /* Full-screen quad at the far plane (depth 0) through the normal pipeline. */
+    /* Full-screen quad at the far plane (depth 1) through the normal pipeline. The clip
+     * range is z in [-w, 0] and the quad's w is 1: z sits a hair inside -1 so it can't be
+     * clipped away, and is written as depth 0.999999. */
     float *v = ring_alloc(4 * 3 * 4);
     if (!v) return;
-    const float q[12] = {-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0};
+    const float zf = -0.999999f;
+    const float q[12] = {-1, -1, zf, 1, -1, zf, -1, 1, zf, 1, 1, zf};
     memcpy(v, q, sizeof q);
     Packet *p = new_packet(PK_CLEAR);
     if (!p) return;
