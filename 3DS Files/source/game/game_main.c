@@ -142,6 +142,17 @@ const char *ios_save_dir(void) {
         s_save_arch = 0;
         if (sys_is_cia()) {
             Result r = archiveMount(ARCHIVE_SAVEDATA, fsMakePath(PATH_EMPTY, ""), "save");
+            /* A freshly installed title's save data isn't formatted yet (build 12 on hardware:
+             * c8a04555). Retail titles format it on first boot; only "not formatted" is
+             * answered with a format, never another error, so existing data can't be wiped. */
+            if (r == (Result)0xC8A04554 || r == (Result)0xC8A04555) {
+                Result f = FSUSER_FormatSaveData(ARCHIVE_SAVEDATA, fsMakePath(PATH_EMPTY, ""),
+                                                 0x200, 8, 8, 11, 11, true);
+                sys_log("save: save data not formatted (%08lx), formatting: %08lx",
+                        (unsigned long)r, (unsigned long)f);
+                if (R_SUCCEEDED(f))
+                    r = archiveMount(ARCHIVE_SAVEDATA, fsMakePath(PATH_EMPTY, ""), "save");
+            }
             if (R_SUCCEEDED(r)) {
                 s_save_arch = 1;
                 save_take_over("RaceData");
