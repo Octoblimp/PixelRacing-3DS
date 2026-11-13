@@ -202,6 +202,7 @@ static float steer_now(void) {
 static float s_steer; /* this tick's value, for the Controls page's meter */
 
 float controls_steer(void) {
+    input_motion(s_c.steer == STEER_TILT); /* no motion sensor at all with the Circle Pad */
     s_steer = steer_now();
     return s_steer;
 }

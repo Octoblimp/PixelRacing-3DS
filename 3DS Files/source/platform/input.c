@@ -2,6 +2,7 @@
 #include <3ds.h>
 #include <string.h>
 #include "input.h"
+#include "sys.h"
 
 #define BIND_SLOTS 12
 #define ANALOG_SLOTS 2
@@ -34,15 +35,24 @@ static bool s_accel_on;
 #define ACCEL_SY (1.0f)
 #define ACCEL_SZ (-1.0f)
 
-void input_init(void) {
-    s_accel_on = R_SUCCEEDED(HIDUSER_EnableAccelerometer());
-    HIDUSER_EnableGyroscope();
+/* The motion sensor is on only while the player steers by tilt (controls.c calls
+ * input_motion every tick). With the Circle Pad chosen it is switched off and the gravity
+ * reads level, so no movement of the console reaches the game. The gyroscope is never used. */
+void input_init(void) {}
+
+void input_motion(bool on) {
+    if (on == s_accel_on) return;
+    if (on) {
+        s_accel_on = R_SUCCEEDED(HIDUSER_EnableAccelerometer());
+    } else {
+        HIDUSER_DisableAccelerometer();
+        s_accel_on = false;
+        s_g[0] = 0.0f, s_g[1] = -1.0f, s_g[2] = 0.0f;
+    }
+    sys_log("input: motion sensor %s", s_accel_on ? "on (tilt steering)" : "off");
 }
 
-void input_exit(void) {
-    HIDUSER_DisableAccelerometer();
-    HIDUSER_DisableGyroscope();
-}
+void input_exit(void) { input_motion(false); }
 
 void input_update(void) {
     hidScanInput();

@@ -32,6 +32,8 @@ int input_touches(InputTouch *out, int max);
 /* Gravity in g in the 3DS body frame: x right along the long side, y up along the screen,
  * z out of the screen towards the player (held upright: (0,-1,0)). Low-pass filtered. */
 void input_accel_g(float g[3]);
+/* Switches the accelerometer on (tilt steering) or off (level gravity from then on). */
+void input_motion(bool on);
 
 /* Raw state for the platform layer. */
 uint32_t input_held(void);
